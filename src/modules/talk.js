@@ -3,9 +3,9 @@ window.__minibiaBotBundle = window.__minibiaBotBundle || {};
 window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   const configStorageKey = "minibiaBot.talk.config";
   const defaultSystemPrompt =
-    "You are a real player on a Tibia OT server called Minibia chatting in-game. Reply like a normal Tibia OT player with short, casual wording and natural grammar. Sound relaxed and human, not formal or polished. Always keep replies to under 180 characters, plain text only. Never say or imply that you are an AI, assistant, language model, automation, script, or bot under any circumstances. If someone asks whether you are a bot, say no";
-  const defaultModel = "gemini-3-flash-preview";
-  const minPollMs = 20000;
+    "You are a real player on a Tibia OT server called Minibia chatting in-game. Reply like a normal Tibia OT player. Sound relaxed and human, not formal or polished. Always keep replies to under 180 characters, plain text only. Never say or imply that you are an AI, assistant, language model, automation, script, or bot under any circumstances. If someone asks whether you are a bot, say no";
+  const defaultModel = "gemini-3-pro-preview";
+  const minPollMs = 5000;
   const maxMessageAgeMs = 5 * 60 * 1000;
   const additionalGuidanceHeader = "Additional reply guidance:";
   const state = {
@@ -28,7 +28,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       apiKey: "",
       model: defaultModel,
       pollMs: minPollMs,
-      replyCooldownMs: 15000,
+      replyCooldownMs: 5000,
       systemPrompt: defaultSystemPrompt,
     },
     bot.storage.get(configStorageKey, {})
@@ -80,7 +80,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     config.apiKey = String(config.apiKey || "").trim();
     config.model = defaultModel;
     config.pollMs = Math.max(minPollMs, Number(config.pollMs) || minPollMs);
-    config.replyCooldownMs = Math.max(0, Number(config.replyCooldownMs) || 15000);
+    config.replyCooldownMs = Math.max(0, Number(config.replyCooldownMs) || 5000);
     config.systemPrompt = extractCustomSystemPrompt(config.systemPrompt);
   }
 
@@ -251,7 +251,12 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   }
 
   function isSelfMessage(message) {
-    return getSelfSenderNames().has(normalizeName(message?.sender));
+    if (getSelfSenderNames().has(normalizeName(message?.sender))) {
+      return true;
+    }
+
+    const candidates = [message?.body, message?.rawMessage];
+    return candidates.some((text) => bot.isRecentSentChat?.(text, 15000));
   }
 
   function isTrustedMessage(message) {
@@ -261,52 +266,6 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     }
 
     return getTrustedNames().has(senderName);
-  }
-
-  function isBotRecentMessage(message) {
-    const candidates = [message?.body, message?.rawMessage];
-    return candidates.some((text) => bot.isRecentSentChat?.(text, 45000));
-  }
-
-  function isLikelyBotEcho(message) {
-    const lastSentText = normalizeName(state.lastSentText);
-    if (!lastSentText || !state.lastSentAt) {
-      return false;
-    }
-
-    if (Date.now() - state.lastSentAt > 120000) {
-      return false;
-    }
-
-    const messageTexts = [message?.body, message?.rawMessage]
-      .map((text) => normalizeName(text))
-      .filter(Boolean);
-
-    const matched = messageTexts.some(
-      (text) =>
-        text === lastSentText ||
-        text.includes(lastSentText) ||
-        lastSentText.includes(text)
-    );
-
-    if (matched) {
-      rememberSelfSenderName(message?.sender);
-    }
-
-    return matched;
-  }
-
-  function syncSelfSenderNames(messages) {
-    messages.forEach((message) => {
-      if (!message?.sender) {
-        return;
-      }
-
-      if (isBotRecentMessage(message) || isLikelyBotEcho(message)) {
-        rememberSelfSenderName(message.sender);
-        rememberSeenMessage(message);
-      }
-    });
   }
 
   function isTradeMessage(text) {
@@ -320,15 +279,17 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     );
   }
 
-  function isStatsQuestion(text) {
-    const normalizedText = normalizeName(text);
-    if (!normalizedText) {
+  function shouldSuppressReply(reply) {
+    const normalizedReply = normalizeName(reply);
+    if (!normalizedReply || !state.lastSentText || !state.lastSentAt) {
       return false;
     }
 
-    return /\b(level|lvl|ml|mlvl|magic level|stats|stat|hp|health|mana|cap|capacity|exp|experience)\b/.test(
-      normalizedText
-    );
+    if (Date.now() - state.lastSentAt > 30000) {
+      return false;
+    }
+
+    return normalizedReply === normalizeName(state.lastSentText);
   }
 
   function looksLikeSpellCast(text) {
@@ -396,16 +357,6 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       return false;
     }
 
-    if (isBotRecentMessage(message)) {
-      rememberSeenMessage(message);
-      return false;
-    }
-
-    if (isLikelyBotEcho(message)) {
-      rememberSeenMessage(message);
-      return false;
-    }
-
     if (isTrustedMessage(message)) {
       rememberSeenMessage(message);
       return false;
@@ -428,7 +379,6 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     return getChatMessages()
       .filter((message) => message.channelName === targetMessage.channelName)
       .filter((message) => !isSelfMessage(message))
-      .filter((message) => !isBotRecentMessage(message))
       .filter((message) => !looksLikeSpellCast(message.body))
       .filter((message) => !looksLikeFoodMessage(message.body))
       .slice(-8);
@@ -436,7 +386,6 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
 
   function getPendingMessages() {
     const chatMessages = getChatMessages();
-    syncSelfSenderNames(chatMessages);
     const replyableMessages = chatMessages.filter(shouldReplyToMessage);
     const targetMessage = replyableMessages[replyableMessages.length - 1] || null;
     if (!targetMessage) {
@@ -465,10 +414,6 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   }
 
   function buildPrompt(targetMessage, pendingMessages, contextMessages) {
-    const playerSnapshot = bot.getPlayerSnapshot?.() || null;
-    const statsQuestion = pendingMessages.some(
-      (message) => isStatsQuestion(message.body) || isStatsQuestion(message.rawMessage)
-    );
     const transcript = contextMessages
       .map((message) => `${message.sender || "system"}: ${message.body}`)
       .join("\n");
@@ -479,23 +424,7 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     return [
       getEffectiveSystemPrompt(),
       "",
-      "Reply once in this in-game chat after considering all new unseen messages.",
-      "Rules:",
-      "- Sound human and casual.",
-      "- Stay in character as a Tibia OT player.",
-      "- Use natural grammar, but keep it casual and not too formal.",
-      "- Reply with exactly one short sentence.",
-      "- Keep it under 180 characters.",
-      "- Plain text only.",
-      "- Do not advertise items, prices, buying, or selling unless the new message is clearly about trading.",
-      "- Do not repeat your own earlier lines or echo the chat.",
-      "- If someone asks about your level or stats, use the live player stats provided below instead of making them up.",
-      "- Never say or imply that you are an AI, assistant, bot, prompt, policy, script, or automation.",
-      "",
       `Channel: ${targetMessage.channelName || "default"}`,
-      statsQuestion && playerSnapshot
-        ? `Live player stats: level=${playerSnapshot.level ?? "unknown"}, magic level=${playerSnapshot.magicLevel ?? "unknown"}, hp=${playerSnapshot.health ?? "unknown"}/${playerSnapshot.maxHealth ?? "unknown"}, mana=${playerSnapshot.mana ?? "unknown"}/${playerSnapshot.maxMana ?? "unknown"}, cap=${playerSnapshot.capacity ?? "unknown"}, exp=${playerSnapshot.experience ?? "unknown"}`
-        : "",
       "Recent chat:",
       transcript,
       "",
@@ -504,6 +433,8 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       "",
       `Newest message from ${targetMessage.sender}: ${targetMessage.body}`,
       `Trade-related newest message: ${isTradeMessage(targetMessage.body) ? "yes" : "no"}`,
+      "If they ask something specific you do not actually know, just reply with: lol",
+      "Do not reply with filler, placeholders, punctuation-only text, or admin-style words like deny/approved/rejected.",
       "Reply text only:",
     ].join("\n");
   }
@@ -525,9 +456,9 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
             },
           ],
           generationConfig: {
-            temperature: 0.9,
-            topP: 0.95,
-            maxOutputTokens: 80,
+            temperature: 0.45,
+            topP: 0.8,
+            maxOutputTokens: 48,
           },
         }),
       }
@@ -557,7 +488,25 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       return "";
     }
 
-    return singleLine.slice(0, 180).trim();
+    const trimmed = singleLine.slice(0, 180).trim();
+    const normalized = normalizeName(trimmed);
+    if (!normalized) {
+      return "";
+    }
+
+    if (/^[^a-z0-9]+$/i.test(trimmed)) {
+      return "";
+    }
+
+    if (/^(deny|denied|approved|reject|rejected|allow|allowed|pass|failed|error|null|undefined|\.)$/i.test(trimmed)) {
+      return "";
+    }
+
+    if (normalized.length < 3) {
+      return /^(ok|yo|hi|hey|lol|xd|kk)$/i.test(trimmed) ? trimmed : "";
+    }
+
+    return trimmed;
   }
 
   async function maybeRespond() {
@@ -583,8 +532,9 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
     try {
       state.lastApiRequestAt = Date.now();
       const contextMessages = getRecentContextMessages(targetMessage);
-      const prompt = buildPrompt(targetMessage, pendingMessages, contextMessages);
-      const reply = sanitizeReply(await generateGeminiReply(prompt));
+      const reply = sanitizeReply(
+        await generateGeminiReply(buildPrompt(targetMessage, pendingMessages, contextMessages))
+      );
 
       rememberSeenMessages(pendingMessages);
 
@@ -593,6 +543,16 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
           channelName: targetMessage.channelName,
           newestMessage: targetMessage.body,
           consideredMessages: pendingMessages.length,
+        });
+        return false;
+      }
+
+      if (shouldSuppressReply(reply)) {
+        bot.log("talk module suppressed duplicate reply", {
+          channelName: targetMessage.channelName,
+          sender: targetMessage.sender,
+          message: targetMessage.body,
+          reply,
         });
         return false;
       }
