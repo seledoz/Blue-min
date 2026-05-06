@@ -1360,10 +1360,11 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
     timerId: null,
     lastRuneAt: 0,
   };
+  let resumeListenersAttached = false;
 
   const config = Object.assign(
     {
-      tickMs: 1000,
+      tickMs: 250,
       minHpPercent: 50,
       minFoodSeconds: 30,
       runeSpellWords: "adori vita vis",
@@ -1373,6 +1374,7 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
     },
     bot.storage.get(configStorageKey, {})
   );
+  config.tickMs = 250;
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -1407,17 +1409,41 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
     return { hp, mana, food };
   }
 
-  function canMakeRune() {
+  function getGateStatus(now = Date.now()) {
     const { hp, mana, food } = readStats();
-    if (!hp || !mana) return false;
+    if (!hp || !mana) {
+      return {
+        hasStats: false,
+        enoughHp: false,
+        enoughMana: false,
+        enoughFood: false,
+        cooldownReady: false,
+        cooldownRemainingMs: config.runeCooldownMs,
+        canMakeRune: false,
+      };
+    }
 
     const hpPercent = hp.max > 0 ? (hp.current / hp.max) * 100 : 0;
     const enoughHp = hpPercent >= config.minHpPercent;
     const enoughMana = mana.current >= config.runeManaCost;
     const enoughFood = food?.seconds == null || food.seconds >= config.minFoodSeconds;
-    const cooldownReady = Date.now() - state.lastRuneAt >= config.runeCooldownMs;
+    const cooldownElapsedMs = now - state.lastRuneAt;
+    const cooldownRemainingMs = Math.max(0, config.runeCooldownMs - cooldownElapsedMs);
+    const cooldownReady = cooldownRemainingMs === 0;
 
-    return enoughHp && enoughMana && enoughFood && cooldownReady;
+    return {
+      hasStats: true,
+      enoughHp,
+      enoughMana,
+      enoughFood,
+      cooldownReady,
+      cooldownRemainingMs,
+      canMakeRune: enoughHp && enoughMana && enoughFood && cooldownReady,
+    };
+  }
+
+  function canMakeRune(now = Date.now()) {
+    return getGateStatus(now).canMakeRune;
   }
 
   function tryMakeRune() {
@@ -1441,15 +1467,62 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
     }, config.tickMs);
   }
 
+  function runImmediateTick() {
+    if (!state.running) return;
+
+    if (state.timerId != null) {
+      window.clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+
+    tick();
+  }
+
+  function handleResume() {
+    if (document.hidden) {
+      return;
+    }
+
+    runImmediateTick();
+  }
+
+  function attachResumeListeners() {
+    if (resumeListenersAttached) {
+      return;
+    }
+
+    document.addEventListener("visibilitychange", handleResume);
+    window.addEventListener("focus", handleResume);
+    window.addEventListener("pageshow", handleResume);
+    resumeListenersAttached = true;
+  }
+
+  function detachResumeListeners() {
+    if (!resumeListenersAttached) {
+      return;
+    }
+
+    document.removeEventListener("visibilitychange", handleResume);
+    window.removeEventListener("focus", handleResume);
+    window.removeEventListener("pageshow", handleResume);
+    resumeListenersAttached = false;
+  }
+
   function tick() {
     if (!state.running) return;
 
-    tryMakeRune();
-    scheduleNextTick();
+    try {
+      tryMakeRune();
+    } catch (error) {
+      bot.log("rune tick failed", error?.message || error);
+    } finally {
+      scheduleNextTick();
+    }
   }
 
   function start(overrides = {}) {
     Object.assign(config, overrides, { enabled: true });
+    config.tickMs = 250;
     persistConfig();
 
     if (state.running) {
@@ -1458,6 +1531,7 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
     }
 
     state.running = true;
+    attachResumeListeners();
     bot.log("rune maker started", { ...config });
     tick();
     return true;
@@ -1471,6 +1545,8 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
       state.timerId = null;
     }
 
+    detachResumeListeners();
+
     config.enabled = false;
     persistConfig();
     bot.log("rune maker stopped");
@@ -1480,14 +1556,16 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
   function status() {
     return {
       running: state.running,
-      config: { ...config },
-      stats: readStats(),
-      lastRuneAt: state.lastRuneAt,
-    };
+        config: { ...config },
+        stats: readStats(),
+        gates: getGateStatus(),
+        lastRuneAt: state.lastRuneAt,
+      };
   }
 
   function updateConfig(nextConfig = {}) {
     Object.assign(config, nextConfig);
+    config.tickMs = 250;
     persistConfig();
     bot.log("rune config updated", { ...config });
     return { ...config };
@@ -1502,6 +1580,7 @@ window.__minibiaBotBundle.installRuneModule = function installRuneModule(bot) {
     stop,
     status,
     readStats,
+    getGateStatus,
     canMakeRune,
     tryMakeRune,
     config,
@@ -1735,6 +1814,7 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     timerId: null,
     lastFoodAt: 0,
   };
+  let resumeListenersAttached = false;
 
   const config = Object.assign(
     {
@@ -1745,6 +1825,7 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     },
     bot.storage.get(configStorageKey, {})
   );
+  config.tickMs = 1000;
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -1917,15 +1998,62 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     }, config.tickMs);
   }
 
+  function runImmediateTick() {
+    if (!state.running) return;
+
+    if (state.timerId != null) {
+      window.clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+
+    tick();
+  }
+
+  function handleResume() {
+    if (document.hidden) {
+      return;
+    }
+
+    runImmediateTick();
+  }
+
+  function attachResumeListeners() {
+    if (resumeListenersAttached) {
+      return;
+    }
+
+    document.addEventListener("visibilitychange", handleResume);
+    window.addEventListener("focus", handleResume);
+    window.addEventListener("pageshow", handleResume);
+    resumeListenersAttached = true;
+  }
+
+  function detachResumeListeners() {
+    if (!resumeListenersAttached) {
+      return;
+    }
+
+    document.removeEventListener("visibilitychange", handleResume);
+    window.removeEventListener("focus", handleResume);
+    window.removeEventListener("pageshow", handleResume);
+    resumeListenersAttached = false;
+  }
+
   function tick() {
     if (!state.running) return;
 
-    tryEat();
-    scheduleNextTick();
+    try {
+      tryEat();
+    } catch (error) {
+      bot.log("auto eat tick failed", error?.message || error);
+    } finally {
+      scheduleNextTick();
+    }
   }
 
   function start(overrides = {}) {
     Object.assign(config, overrides, { enabled: true });
+    config.tickMs = 1000;
     persistConfig();
 
     if (state.running) {
@@ -1934,6 +2062,7 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     }
 
     state.running = true;
+    attachResumeListeners();
     bot.log("auto eat started", { eatCooldownMs: config.eatCooldownMs });
     tick();
     return true;
@@ -1946,6 +2075,8 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
       window.clearTimeout(state.timerId);
       state.timerId = null;
     }
+
+    detachResumeListeners();
 
     config.enabled = false;
     persistConfig();
@@ -1964,6 +2095,7 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
 
   function updateConfig(nextConfig = {}) {
     Object.assign(config, nextConfig);
+    config.tickMs = 1000;
     persistConfig();
     bot.log("auto eat config updated", { ...config });
     return { ...config };

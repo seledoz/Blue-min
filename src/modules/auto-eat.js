@@ -7,6 +7,7 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     timerId: null,
     lastFoodAt: 0,
   };
+  let resumeListenersAttached = false;
 
   const config = Object.assign(
     {
@@ -17,6 +18,7 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     },
     bot.storage.get(configStorageKey, {})
   );
+  config.tickMs = 1000;
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -189,15 +191,62 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     }, config.tickMs);
   }
 
+  function runImmediateTick() {
+    if (!state.running) return;
+
+    if (state.timerId != null) {
+      window.clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+
+    tick();
+  }
+
+  function handleResume() {
+    if (document.hidden) {
+      return;
+    }
+
+    runImmediateTick();
+  }
+
+  function attachResumeListeners() {
+    if (resumeListenersAttached) {
+      return;
+    }
+
+    document.addEventListener("visibilitychange", handleResume);
+    window.addEventListener("focus", handleResume);
+    window.addEventListener("pageshow", handleResume);
+    resumeListenersAttached = true;
+  }
+
+  function detachResumeListeners() {
+    if (!resumeListenersAttached) {
+      return;
+    }
+
+    document.removeEventListener("visibilitychange", handleResume);
+    window.removeEventListener("focus", handleResume);
+    window.removeEventListener("pageshow", handleResume);
+    resumeListenersAttached = false;
+  }
+
   function tick() {
     if (!state.running) return;
 
-    tryEat();
-    scheduleNextTick();
+    try {
+      tryEat();
+    } catch (error) {
+      bot.log("auto eat tick failed", error?.message || error);
+    } finally {
+      scheduleNextTick();
+    }
   }
 
   function start(overrides = {}) {
     Object.assign(config, overrides, { enabled: true });
+    config.tickMs = 1000;
     persistConfig();
 
     if (state.running) {
@@ -206,6 +255,7 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
     }
 
     state.running = true;
+    attachResumeListeners();
     bot.log("auto eat started", { eatCooldownMs: config.eatCooldownMs });
     tick();
     return true;
@@ -218,6 +268,8 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
       window.clearTimeout(state.timerId);
       state.timerId = null;
     }
+
+    detachResumeListeners();
 
     config.enabled = false;
     persistConfig();
@@ -236,6 +288,7 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
 
   function updateConfig(nextConfig = {}) {
     Object.assign(config, nextConfig);
+    config.tickMs = 1000;
     persistConfig();
     bot.log("auto eat config updated", { ...config });
     return { ...config };
