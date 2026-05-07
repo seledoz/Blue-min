@@ -1823,6 +1823,8 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
   const configStorageKey = "minibiaBot.cave.config";
   const routeStorageKey = "minibiaBot.cave.route";
   const transitionStorageKey = "minibiaBot.cave.transitions";
+  const minimapOverlayRootId = "minibia-bot-cave-minimap-overlay";
+  const minimapOverlayStyleId = "minibia-bot-cave-minimap-overlay-style";
   const state = {
     running: false,
     timerId: null,
@@ -1835,6 +1837,9 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     lastStairsUseAt: 0,
     lastObservedPosition: null,
     pendingTransitionSource: null,
+  };
+  const minimapOverlayState = {
+    timerId: null,
   };
 
   const config = Object.assign(
@@ -2064,6 +2069,201 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     }
 
     return tiles;
+  }
+
+  function ensureMinimapOverlayStyle() {
+    if (document.getElementById(minimapOverlayStyleId)) {
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.id = minimapOverlayStyleId;
+    style.textContent = `
+      #${minimapOverlayRootId} {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 999997;
+      }
+
+      #${minimapOverlayRootId} canvas {
+        position: fixed;
+        pointer-events: none;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function ensureMinimapOverlayRoot() {
+    let root = document.getElementById(minimapOverlayRootId);
+    if (root) {
+      return root;
+    }
+
+    root = document.createElement("div");
+    root.id = minimapOverlayRootId;
+    root.innerHTML = '<canvas></canvas>';
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function destroyMinimapOverlayElements() {
+    document.getElementById(minimapOverlayRootId)?.remove();
+    document.getElementById(minimapOverlayStyleId)?.remove();
+  }
+
+  function getMinimapCanvas() {
+    return window.gameClient?.renderer?.minimap?.minimap?.canvas || document.getElementById("minimap") || null;
+  }
+
+  function getMinimapViewport() {
+    const canvas = getMinimapCanvas();
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      return null;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+
+    return { canvas, rect };
+  }
+
+  function getWaypointCanvasPoint(waypoint, viewport, playerPosition, minimap) {
+    if (!waypoint || !viewport || !playerPosition || !minimap) {
+      return null;
+    }
+
+    if (waypoint.z !== minimap.__renderLayer) {
+      return null;
+    }
+
+    const zoomScale = 1 << (Number(minimap.__zoomLevel) || 0);
+    const center = minimap.center || { x: 0, y: 0 };
+    const internalWidth = Number(viewport.canvas.width) || 160;
+    const internalHeight = Number(viewport.canvas.height) || 160;
+    const internalX = (internalWidth / 2) + (waypoint.x - playerPosition.x - Number(center.x || 0)) * zoomScale;
+    const internalY = (internalHeight / 2) + (waypoint.y - playerPosition.y - Number(center.y || 0)) * zoomScale;
+
+    return {
+      x: internalX * (viewport.rect.width / internalWidth),
+      y: internalY * (viewport.rect.height / internalHeight),
+    };
+  }
+
+  function renderMinimapOverlay() {
+    const viewport = getMinimapViewport();
+    const minimap = window.gameClient?.renderer?.minimap;
+    const playerPosition = normalizePosition(bot.getPlayerPosition());
+    const root = ensureMinimapOverlayRoot();
+    const canvas = root.querySelector("canvas");
+
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      return;
+    }
+
+    if (!viewport || !minimap || !playerPosition || !route.length) {
+      canvas.width = 0;
+      canvas.height = 0;
+      return;
+    }
+
+    const rect = viewport.rect;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    const pixelWidth = Math.round(width * dpr);
+    const pixelHeight = Math.round(height * dpr);
+
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
+
+    canvas.style.left = `${Math.round(rect.left)}px`;
+    canvas.style.top = `${Math.round(rect.top)}px`;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    const visibleWaypoints = route
+      .map((waypoint, index) => ({
+        waypoint,
+        index,
+        point: getWaypointCanvasPoint(waypoint, viewport, playerPosition, minimap),
+      }))
+      .filter((entry) => entry.point);
+
+    if (!visibleWaypoints.length) {
+      return;
+    }
+
+    context.save();
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    for (let index = 1; index < visibleWaypoints.length; index += 1) {
+      const previous = visibleWaypoints[index - 1];
+      const current = visibleWaypoints[index];
+      if (current.index !== previous.index + 1) {
+        continue;
+      }
+
+      context.strokeStyle = "rgba(92, 228, 196, 0.7)";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(previous.point.x, previous.point.y);
+      context.lineTo(current.point.x, current.point.y);
+      context.stroke();
+    }
+
+    visibleWaypoints.forEach(({ point, index }) => {
+      const isCurrent = state.running && index === state.currentIndex;
+      const radius = isCurrent ? 7 : 5;
+
+      context.fillStyle = isCurrent ? "#ffcf5a" : "#2bd1c4";
+      context.strokeStyle = isCurrent ? "#6a2400" : "#083f49";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+
+      context.fillStyle = "#ffffff";
+      context.font = "bold 11px Verdana, sans-serif";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.fillText(String(index + 1), point.x, point.y);
+    });
+
+    context.restore();
+  }
+
+  function startMinimapOverlay() {
+    if (minimapOverlayState.timerId != null) {
+      return;
+    }
+
+    ensureMinimapOverlayStyle();
+    renderMinimapOverlay();
+    minimapOverlayState.timerId = window.setInterval(renderMinimapOverlay, 250);
+  }
+
+  function stopMinimapOverlay() {
+    if (minimapOverlayState.timerId != null) {
+      window.clearInterval(minimapOverlayState.timerId);
+      minimapOverlayState.timerId = null;
+    }
+
+    destroyMinimapOverlayElements();
   }
 
   function getNearbyFloorChangeTiles(position, radius = 8) {
@@ -2626,6 +2826,8 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
 
   startObserver();
   bot.addCleanup(stopObserver);
+  startMinimapOverlay();
+  bot.addCleanup(stopMinimapOverlay);
 
   if (config.enabled && route.length) {
     start();
@@ -3872,13 +4074,10 @@ window.__minibiaBotBundle = window.__minibiaBotBundle || {};
 
 window.__minibiaBotBundle.installPanel = function installPanel(bot) {
   const panelPositionKey = "minibiaBot.ui.panelPosition";
-  const cavePopupPositionKey = "minibiaBot.ui.cavePopupPosition";
   const panelCollapsedKey = "minibiaBot.ui.panelCollapsed";
-  const cavePopupVisibleKey = "minibiaBot.ui.cavePopupVisible";
 
   function destroy() {
     document.getElementById("minibia-bot-panel")?.remove();
-    document.getElementById("minibia-bot-cave-popup")?.remove();
     document.getElementById("minibia-bot-style")?.remove();
   }
 
@@ -3896,14 +4095,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
   function getSavedPanelCollapsed() {
     return !!bot.storage.get(panelCollapsedKey, false);
-  }
-
-  function saveCavePopupVisible(visible) {
-    bot.storage.set(cavePopupVisibleKey, !!visible);
-  }
-
-  function getSavedCavePopupVisible() {
-    return !!bot.storage.get(cavePopupVisibleKey, false);
   }
 
   function refreshHomeLabel() {
@@ -4045,7 +4236,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
   function refreshCaveStatus() {
     const statusLabel = document.getElementById("minibia-bot-cave-status");
-    const popupStatusLabel = document.getElementById("minibia-bot-cave-popup-status");
     const startButton = document.getElementById("minibia-bot-cave-start");
     const stopButton = document.getElementById("minibia-bot-cave-stop");
     const route = bot.cave?.getRoute?.() || [];
@@ -4066,11 +4256,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       }
     }
 
-    if (popupStatusLabel) {
-      popupStatusLabel.textContent =
-        statusLabel?.textContent || "Status: no waypoints";
-    }
-
     if (startButton) {
       startButton.disabled = !route.length || !!status?.running;
     }
@@ -4078,38 +4263,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (stopButton) {
       stopButton.disabled = !status?.running;
     }
-  }
-
-  function renderCaveWaypoints() {
-    const list = document.getElementById("minibia-bot-cave-waypoints");
-    if (!list) return;
-
-    const route = bot.cave?.getRoute?.() || [];
-    const currentIndex = bot.cave?.status?.().currentIndex ?? 0;
-    list.innerHTML = "";
-
-    if (!route.length) {
-      const empty = document.createElement("div");
-      empty.className = "mb-small-note";
-      empty.textContent = "No waypoints recorded.";
-      list.appendChild(empty);
-      refreshCaveStatus();
-      return;
-    }
-
-    route.forEach((waypoint, index) => {
-      const row = document.createElement("div");
-      row.className = "mb-list-row";
-
-      const label = document.createElement("span");
-      const active = bot.cave?.status?.().running && index === currentIndex;
-      label.textContent = `${index + 1}. ${waypoint.x}, ${waypoint.y}, ${waypoint.z}${active ? " *" : ""}`;
-
-      row.appendChild(label);
-      list.appendChild(row);
-    });
-
-    refreshCaveStatus();
   }
 
   function refreshCaveClosestStatus() {
@@ -4369,8 +4522,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const style = document.createElement("style");
     style.id = "minibia-bot-style";
     style.textContent = `
-      #minibia-bot-panel,
-      #minibia-bot-cave-popup {
+      #minibia-bot-panel {
         position: fixed;
         z-index: 999999;
         max-width: calc(100vw - 32px);
@@ -4387,21 +4539,14 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       #minibia-bot-panel {
         top: 16px;
         right: 16px;
-        width: 640px;
-      }
-
-      #minibia-bot-cave-popup {
-        top: 56px;
-        right: 56px;
-        width: 360px;
+        width: 960px;
       }
 
       #minibia-bot-panel[data-collapsed="true"] {
         width: 220px;
       }
 
-      #minibia-bot-panel .mb-title,
-      #minibia-bot-cave-popup .mb-title {
+      #minibia-bot-panel .mb-title {
         margin: 0;
         font-weight: 700;
         letter-spacing: 0.04em;
@@ -4409,8 +4554,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         cursor: move;
       }
 
-      #minibia-bot-panel .mb-titlebar,
-      #minibia-bot-cave-popup .mb-titlebar {
+      #minibia-bot-panel .mb-titlebar {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -4418,8 +4562,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         margin: 0 0 8px;
       }
 
-      #minibia-bot-panel .mb-icon-button,
-      #minibia-bot-cave-popup .mb-icon-button {
+      #minibia-bot-panel .mb-icon-button {
         width: 24px;
         min-width: 24px;
         padding: 2px 0;
@@ -4434,7 +4577,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
       #minibia-bot-panel .mb-body {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 240px;
+        grid-template-columns: minmax(0, 1fr) 280px 240px;
         gap: 12px;
         align-items: start;
       }
@@ -4443,23 +4586,14 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         display: none !important;
       }
 
-      #minibia-bot-cave-popup[hidden] {
-        display: none !important;
-      }
-
-      #minibia-bot-cave-popup .mb-body {
-        display: grid;
-        gap: 8px;
-      }
-
       #minibia-bot-panel .mb-side-column,
-      #minibia-bot-panel .mb-main-column {
+      #minibia-bot-panel .mb-main-column,
+      #minibia-bot-panel .mb-cave-column {
         display: grid;
         gap: 10px;
       }
 
-      #minibia-bot-panel .mb-section,
-      #minibia-bot-cave-popup .mb-section {
+      #minibia-bot-panel .mb-section {
         padding-top: 10px;
         border-top: 1px solid rgba(224, 200, 148, 0.16);
       }
@@ -4469,21 +4603,18 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         border-top: 0;
       }
 
-      #minibia-bot-panel .mb-label,
-      #minibia-bot-cave-popup .mb-label {
+      #minibia-bot-panel .mb-label {
         margin: 0 0 8px;
         color: #d3c49d;
         word-break: break-word;
       }
 
-      #minibia-bot-panel .mb-actions,
-      #minibia-bot-cave-popup .mb-actions {
+      #minibia-bot-panel .mb-actions {
         display: grid;
         gap: 6px;
       }
 
-      #minibia-bot-panel button,
-      #minibia-bot-cave-popup button {
+      #minibia-bot-panel button {
         width: 100%;
         padding: 8px 10px;
         border: 1px solid rgba(224, 200, 148, 0.35);
@@ -4494,15 +4625,12 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         cursor: pointer;
       }
 
-      #minibia-bot-panel button:hover,
-      #minibia-bot-cave-popup button:hover {
+      #minibia-bot-panel button:hover {
         background: linear-gradient(180deg, #755f3d, #4f4028);
       }
 
       #minibia-bot-panel input,
-      #minibia-bot-panel textarea,
-      #minibia-bot-cave-popup input,
-      #minibia-bot-cave-popup textarea {
+      #minibia-bot-panel textarea {
         width: 100%;
         box-sizing: border-box;
         padding: 8px 10px;
@@ -4513,22 +4641,19 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         font: inherit;
       }
 
-      #minibia-bot-panel textarea,
-      #minibia-bot-cave-popup textarea {
+      #minibia-bot-panel textarea {
         min-height: 72px;
         resize: vertical;
       }
 
-      #minibia-bot-panel .mb-toggle,
-      #minibia-bot-cave-popup .mb-toggle {
+      #minibia-bot-panel .mb-toggle {
         display: flex;
         align-items: center;
         gap: 8px;
         color: #d3c49d;
       }
 
-      #minibia-bot-panel .mb-toggle input[type="checkbox"],
-      #minibia-bot-cave-popup .mb-toggle input[type="checkbox"] {
+      #minibia-bot-panel .mb-toggle input[type="checkbox"] {
         width: auto;
         margin: 0;
       }
@@ -4577,40 +4702,34 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         gap: 8px;
       }
 
-      #minibia-bot-panel .mb-field,
-      #minibia-bot-cave-popup .mb-field {
+      #minibia-bot-panel .mb-field {
         display: grid;
         gap: 4px;
       }
 
-      #minibia-bot-panel .mb-field-label,
-      #minibia-bot-cave-popup .mb-field-label {
+      #minibia-bot-panel .mb-field-label {
         color: #d3c49d;
         font-size: 11px;
       }
 
-      #minibia-bot-panel .mb-stack,
-      #minibia-bot-cave-popup .mb-stack {
+      #minibia-bot-panel .mb-stack {
         display: grid;
         gap: 8px;
       }
 
-      #minibia-bot-panel .mb-inline,
-      #minibia-bot-cave-popup .mb-inline {
+      #minibia-bot-panel .mb-inline {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 6px;
         align-items: center;
       }
 
-      #minibia-bot-panel .mb-list,
-      #minibia-bot-cave-popup .mb-list {
+      #minibia-bot-panel .mb-list {
         display: grid;
         gap: 6px;
       }
 
-      #minibia-bot-panel .mb-list-row,
-      #minibia-bot-cave-popup .mb-list-row {
+      #minibia-bot-panel .mb-list-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 6px;
@@ -4639,8 +4758,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         text-transform: uppercase;
       }
 
-      #minibia-bot-panel .mb-side-column .mb-list {
-        max-height: 340px;
+      #minibia-bot-panel #minibia-bot-visible-creatures-list {
+        max-height: 150px;
         overflow-y: auto;
         padding-right: 2px;
       }
@@ -4651,21 +4770,18 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         padding-right: 2px;
       }
 
-      #minibia-bot-panel .mb-small-button,
-      #minibia-bot-cave-popup .mb-small-button {
+      #minibia-bot-panel .mb-small-button {
         width: auto;
         padding: 4px 8px;
         border-radius: 6px;
       }
 
-      #minibia-bot-panel .mb-small-note,
-      #minibia-bot-cave-popup .mb-small-note {
+      #minibia-bot-panel .mb-small-note {
         color: #b7a67d;
         font-size: 11px;
       }
 
-      #minibia-bot-panel .mb-note,
-      #minibia-bot-cave-popup .mb-note {
+      #minibia-bot-panel .mb-note {
         margin-top: 8px;
         color: #b7a67d;
         font-size: 11px;
@@ -4673,7 +4789,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
       @media (max-width: 760px) {
         #minibia-bot-panel {
-          width: min(420px, calc(100vw - 32px));
+          width: min(720px, calc(100vw - 32px));
         }
 
         #minibia-bot-panel .mb-body {
@@ -4755,13 +4871,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
             </div>
           </div>
           <div class="mb-section mb-column-section">
-            <div class="mb-label">Cave Bot</div>
-            <div class="mb-stack">
-              <button type="button" id="minibia-bot-open-cave-popup">Open Cave Bot</button>
-              <div class="mb-small-note" id="minibia-bot-cave-status">Status: no waypoints</div>
-            </div>
+            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, and talk.</div>
           </div>
-          <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, and talk.</div>
         </div>
         <div class="mb-side-column">
           <div class="mb-section mb-column-section">
@@ -4813,44 +4924,33 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
             </div>
           </div>
         </div>
-      </div>
-    `;
-    document.body.appendChild(panel);
-
-    const cavePopup = document.createElement("div");
-    cavePopup.id = "minibia-bot-cave-popup";
-    cavePopup.hidden = !getSavedCavePopupVisible();
-    cavePopup.innerHTML = `
-      <div class="mb-titlebar">
-        <div class="mb-title">Cave Bot</div>
-        <button type="button" class="mb-icon-button" id="minibia-bot-cave-close" aria-label="Close cave bot" title="Close">x</button>
-      </div>
-      <div class="mb-body">
-        <div class="mb-section mb-column-section">
-          <div class="mb-stack">
-            <div class="mb-actions">
-              <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
-              <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
-              <button type="button" class="mb-small-button" id="minibia-bot-cave-clear">Clear</button>
-              <button type="button" class="mb-small-button" id="minibia-bot-cave-clear-transitions">Clear Learned Transitions</button>
+        <div class="mb-cave-column">
+          <div class="mb-section mb-column-section">
+            <div class="mb-label">Cave Bot</div>
+            <div class="mb-stack">
+              <div class="mb-actions">
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-clear">Clear</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-clear-transitions">Clear Learned Transitions</button>
+              </div>
+              <div class="mb-actions">
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-refresh-closest">Refresh Closest</button>
+              </div>
+              <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
+              <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
+              <div class="mb-actions">
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-start">Start</button>
+                <button type="button" class="mb-small-button" id="minibia-bot-cave-stop">Stop</button>
+              </div>
+              <div class="mb-small-note" id="minibia-bot-cave-status">Status: no waypoints</div>
+              <div class="mb-small-note">Record Spot saves only route tiles. Floor changes are learned automatically from observed z-changes near floor-change tiles.</div>
             </div>
-            <div class="mb-actions">
-              <button type="button" class="mb-small-button" id="minibia-bot-cave-refresh-closest">Refresh Closest</button>
-            </div>
-            <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
-            <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
-            <div class="mb-actions">
-              <button type="button" class="mb-small-button" id="minibia-bot-cave-start">Start</button>
-              <button type="button" class="mb-small-button" id="minibia-bot-cave-stop">Stop</button>
-            </div>
-            <div class="mb-small-note" id="minibia-bot-cave-popup-status">Status: no waypoints</div>
-            <div class="mb-small-note">Record Spot saves only route tiles. Floor changes are learned automatically from observed z-changes near floor-change tiles.</div>
-            <div class="mb-list" id="minibia-bot-cave-waypoints"></div>
           </div>
         </div>
       </div>
     `;
-    document.body.appendChild(cavePopup);
+    document.body.appendChild(panel);
 
     const unlockAudio = () => {
       bot.unlockAudio?.();
@@ -4858,20 +4958,14 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     panel.addEventListener("pointerdown", unlockAudio, { passive: true });
     panel.addEventListener("keydown", unlockAudio);
-    cavePopup.addEventListener("pointerdown", unlockAudio, { passive: true });
-    cavePopup.addEventListener("keydown", unlockAudio);
 
     bot.addCleanup(() => {
       panel.removeEventListener("pointerdown", unlockAudio);
       panel.removeEventListener("keydown", unlockAudio);
-      cavePopup.removeEventListener("pointerdown", unlockAudio);
-      cavePopup.removeEventListener("keydown", unlockAudio);
     });
 
     applySavedPanelPosition(panel);
-    applySavedPanelPosition(cavePopup, cavePopupPositionKey);
     enableDrag(panel);
-    enableDrag(cavePopup, cavePopupPositionKey);
     setPanelCollapsed(panel, getSavedPanelCollapsed());
 
     const spellInput = panel.querySelector("#minibia-bot-rune-spell");
@@ -4879,7 +4973,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const runeEnabledInput = panel.querySelector("#minibia-bot-rune-enabled");
     const autoEatEnabledInput = panel.querySelector("#minibia-bot-auto-eat-enabled");
     const equipRingEnabledInput = panel.querySelector("#minibia-bot-equip-ring-enabled");
-    const openCavePopupButton = panel.querySelector("#minibia-bot-open-cave-popup");
     const autoHealEnabledInput = panel.querySelector("#minibia-bot-auto-heal-enabled");
     const autoHealMinHpInput = panel.querySelector("#minibia-bot-auto-heal-min-hp");
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-hp-hotkey");
@@ -4897,19 +4990,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const xrayOverlayButton = panel.querySelector("#minibia-bot-xray-overlay-toggle");
     const collapseButton = panel.querySelector("#minibia-bot-collapse");
     const reloadButton = panel.querySelector("#minibia-bot-reload");
-    const caveRecordButton = cavePopup.querySelector("#minibia-bot-cave-record");
-    const caveRemoveLastButton = cavePopup.querySelector("#minibia-bot-cave-remove-last");
-    const caveClearButton = cavePopup.querySelector("#minibia-bot-cave-clear");
-    const caveClearTransitionsButton = cavePopup.querySelector("#minibia-bot-cave-clear-transitions");
-    const caveRefreshClosestButton = cavePopup.querySelector("#minibia-bot-cave-refresh-closest");
-    const caveStartButton = cavePopup.querySelector("#minibia-bot-cave-start");
-    const caveStopButton = cavePopup.querySelector("#minibia-bot-cave-stop");
-    const caveCloseButton = cavePopup.querySelector("#minibia-bot-cave-close");
-
-    function setCavePopupVisible(visible) {
-      cavePopup.hidden = !visible;
-      saveCavePopupVisible(visible);
-    }
+    const caveRecordButton = panel.querySelector("#minibia-bot-cave-record");
+    const caveRemoveLastButton = panel.querySelector("#minibia-bot-cave-remove-last");
+    const caveClearButton = panel.querySelector("#minibia-bot-cave-clear");
+    const caveClearTransitionsButton = panel.querySelector("#minibia-bot-cave-clear-transitions");
+    const caveRefreshClosestButton = panel.querySelector("#minibia-bot-cave-refresh-closest");
+    const caveStartButton = panel.querySelector("#minibia-bot-cave-start");
+    const caveStopButton = panel.querySelector("#minibia-bot-cave-stop");
 
     if (collapseButton) {
       collapseButton.addEventListener("click", () => {
@@ -4921,18 +5008,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (reloadButton) {
       reloadButton.addEventListener("click", () => {
         window.minibiaBotReload?.();
-      });
-    }
-
-    if (openCavePopupButton) {
-      openCavePopupButton.addEventListener("click", () => {
-        setCavePopupVisible(true);
-      });
-    }
-
-    if (caveCloseButton) {
-      caveCloseButton.addEventListener("click", () => {
-        setCavePopupVisible(false);
       });
     }
 
@@ -5067,7 +5142,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveRecordButton) {
       caveRecordButton.addEventListener("click", () => {
         bot.cave.addWaypointCurrentSpot();
-        renderCaveWaypoints();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
       });
@@ -5076,7 +5150,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveRemoveLastButton) {
       caveRemoveLastButton.addEventListener("click", () => {
         bot.cave.removeLastWaypoint();
-        renderCaveWaypoints();
+        refreshCaveStatus();
+        refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
       });
     }
@@ -5084,7 +5159,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveClearButton) {
       caveClearButton.addEventListener("click", () => {
         bot.cave.clearWaypoints();
-        renderCaveWaypoints();
+        refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
       });
@@ -5106,7 +5181,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveStartButton) {
       caveStartButton.addEventListener("click", () => {
         bot.cave.start();
-        renderCaveWaypoints();
+        refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
       });
@@ -5115,7 +5190,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (caveStopButton) {
       caveStopButton.addEventListener("click", () => {
         bot.cave.stop();
-        renderCaveWaypoints();
+        refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
       });
@@ -5257,7 +5332,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshEquipRingStatus();
     refreshTalkStatus();
     refreshVisibleCreatures();
-    renderCaveWaypoints();
     refreshCaveClosestStatus();
     refreshCaveTransitionStatus();
 
@@ -5273,7 +5347,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     const caveStatusTimerId = window.setInterval(() => {
       refreshCaveStatus();
-      renderCaveWaypoints();
       refreshCaveClosestStatus();
       refreshCaveTransitionStatus();
     }, 1000);
@@ -5296,7 +5369,6 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshEquipRingStatus,
     refreshTalkStatus,
     refreshVisibleCreatures,
-    renderCaveWaypoints,
     refreshCaveClosestStatus,
     refreshCaveTransitionStatus,
     getSavedPanelPosition,

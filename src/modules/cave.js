@@ -4,6 +4,8 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
   const configStorageKey = "minibiaBot.cave.config";
   const routeStorageKey = "minibiaBot.cave.route";
   const transitionStorageKey = "minibiaBot.cave.transitions";
+  const minimapOverlayRootId = "minibia-bot-cave-minimap-overlay";
+  const minimapOverlayStyleId = "minibia-bot-cave-minimap-overlay-style";
   const state = {
     running: false,
     timerId: null,
@@ -16,6 +18,9 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     lastStairsUseAt: 0,
     lastObservedPosition: null,
     pendingTransitionSource: null,
+  };
+  const minimapOverlayState = {
+    timerId: null,
   };
 
   const config = Object.assign(
@@ -245,6 +250,201 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     }
 
     return tiles;
+  }
+
+  function ensureMinimapOverlayStyle() {
+    if (document.getElementById(minimapOverlayStyleId)) {
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.id = minimapOverlayStyleId;
+    style.textContent = `
+      #${minimapOverlayRootId} {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 999997;
+      }
+
+      #${minimapOverlayRootId} canvas {
+        position: fixed;
+        pointer-events: none;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function ensureMinimapOverlayRoot() {
+    let root = document.getElementById(minimapOverlayRootId);
+    if (root) {
+      return root;
+    }
+
+    root = document.createElement("div");
+    root.id = minimapOverlayRootId;
+    root.innerHTML = '<canvas></canvas>';
+    document.body.appendChild(root);
+    return root;
+  }
+
+  function destroyMinimapOverlayElements() {
+    document.getElementById(minimapOverlayRootId)?.remove();
+    document.getElementById(minimapOverlayStyleId)?.remove();
+  }
+
+  function getMinimapCanvas() {
+    return window.gameClient?.renderer?.minimap?.minimap?.canvas || document.getElementById("minimap") || null;
+  }
+
+  function getMinimapViewport() {
+    const canvas = getMinimapCanvas();
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      return null;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+
+    return { canvas, rect };
+  }
+
+  function getWaypointCanvasPoint(waypoint, viewport, playerPosition, minimap) {
+    if (!waypoint || !viewport || !playerPosition || !minimap) {
+      return null;
+    }
+
+    if (waypoint.z !== minimap.__renderLayer) {
+      return null;
+    }
+
+    const zoomScale = 1 << (Number(minimap.__zoomLevel) || 0);
+    const center = minimap.center || { x: 0, y: 0 };
+    const internalWidth = Number(viewport.canvas.width) || 160;
+    const internalHeight = Number(viewport.canvas.height) || 160;
+    const internalX = (internalWidth / 2) + (waypoint.x - playerPosition.x - Number(center.x || 0)) * zoomScale;
+    const internalY = (internalHeight / 2) + (waypoint.y - playerPosition.y - Number(center.y || 0)) * zoomScale;
+
+    return {
+      x: internalX * (viewport.rect.width / internalWidth),
+      y: internalY * (viewport.rect.height / internalHeight),
+    };
+  }
+
+  function renderMinimapOverlay() {
+    const viewport = getMinimapViewport();
+    const minimap = window.gameClient?.renderer?.minimap;
+    const playerPosition = normalizePosition(bot.getPlayerPosition());
+    const root = ensureMinimapOverlayRoot();
+    const canvas = root.querySelector("canvas");
+
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      return;
+    }
+
+    if (!viewport || !minimap || !playerPosition || !route.length) {
+      canvas.width = 0;
+      canvas.height = 0;
+      return;
+    }
+
+    const rect = viewport.rect;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const width = Math.max(1, Math.round(rect.width));
+    const height = Math.max(1, Math.round(rect.height));
+    const pixelWidth = Math.round(width * dpr);
+    const pixelHeight = Math.round(height * dpr);
+
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
+
+    canvas.style.left = `${Math.round(rect.left)}px`;
+    canvas.style.top = `${Math.round(rect.top)}px`;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, width, height);
+
+    const visibleWaypoints = route
+      .map((waypoint, index) => ({
+        waypoint,
+        index,
+        point: getWaypointCanvasPoint(waypoint, viewport, playerPosition, minimap),
+      }))
+      .filter((entry) => entry.point);
+
+    if (!visibleWaypoints.length) {
+      return;
+    }
+
+    context.save();
+    context.lineCap = "round";
+    context.lineJoin = "round";
+
+    for (let index = 1; index < visibleWaypoints.length; index += 1) {
+      const previous = visibleWaypoints[index - 1];
+      const current = visibleWaypoints[index];
+      if (current.index !== previous.index + 1) {
+        continue;
+      }
+
+      context.strokeStyle = "rgba(92, 228, 196, 0.7)";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.moveTo(previous.point.x, previous.point.y);
+      context.lineTo(current.point.x, current.point.y);
+      context.stroke();
+    }
+
+    visibleWaypoints.forEach(({ point, index }) => {
+      const isCurrent = state.running && index === state.currentIndex;
+      const radius = isCurrent ? 7 : 5;
+
+      context.fillStyle = isCurrent ? "#ffcf5a" : "#2bd1c4";
+      context.strokeStyle = isCurrent ? "#6a2400" : "#083f49";
+      context.lineWidth = 2;
+      context.beginPath();
+      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+
+      context.fillStyle = "#ffffff";
+      context.font = "bold 11px Verdana, sans-serif";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.fillText(String(index + 1), point.x, point.y);
+    });
+
+    context.restore();
+  }
+
+  function startMinimapOverlay() {
+    if (minimapOverlayState.timerId != null) {
+      return;
+    }
+
+    ensureMinimapOverlayStyle();
+    renderMinimapOverlay();
+    minimapOverlayState.timerId = window.setInterval(renderMinimapOverlay, 250);
+  }
+
+  function stopMinimapOverlay() {
+    if (minimapOverlayState.timerId != null) {
+      window.clearInterval(minimapOverlayState.timerId);
+      minimapOverlayState.timerId = null;
+    }
+
+    destroyMinimapOverlayElements();
   }
 
   function getNearbyFloorChangeTiles(position, radius = 8) {
@@ -807,6 +1007,8 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
 
   startObserver();
   bot.addCleanup(stopObserver);
+  startMinimapOverlay();
+  bot.addCleanup(stopMinimapOverlay);
 
   if (config.enabled && route.length) {
     start();
