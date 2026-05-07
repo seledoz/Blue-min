@@ -281,6 +281,10 @@ window.__minibiaBotBundle.createBot = function createBot() {
         this.heal.stop();
       }
 
+      if (this.cave?.stop) {
+        this.cave.stop();
+      }
+
       if (this.equipRing?.stop) {
         this.equipRing.stop();
       }
@@ -1815,6 +1819,842 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
 };
 window.__minibiaBotBundle = window.__minibiaBotBundle || {};
 
+window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
+  const configStorageKey = "minibiaBot.cave.config";
+  const routeStorageKey = "minibiaBot.cave.route";
+  const transitionStorageKey = "minibiaBot.cave.transitions";
+  const state = {
+    running: false,
+    timerId: null,
+    observerTimerId: null,
+    currentIndex: 0,
+    direction: 1,
+    lastPathAt: 0,
+    lastPositionKey: null,
+    lastProgressAt: 0,
+    lastStairsUseAt: 0,
+    lastObservedPosition: null,
+    pendingTransitionSource: null,
+  };
+
+  const config = Object.assign(
+    {
+      tickMs: 500,
+      repathMs: 1500,
+      waypointTolerance: 0,
+      enabled: false,
+    },
+    bot.storage.get(configStorageKey, {})
+  );
+  config.tickMs = 500;
+
+  let route = normalizeRoute(bot.storage.get(routeStorageKey, []));
+  let transitions = normalizeTransitions(bot.storage.get(transitionStorageKey, []));
+
+  function persistConfig() {
+    bot.storage.set(configStorageKey, { ...config });
+  }
+
+  function persistRoute() {
+    bot.storage.set(routeStorageKey, route.map((waypoint) => ({ ...waypoint })));
+  }
+
+  function persistTransitions() {
+    bot.storage.set(transitionStorageKey, transitions.map((transition) => cloneValue(transition)));
+  }
+
+  function cloneValue(value) {
+    return value ? JSON.parse(JSON.stringify(value)) : null;
+  }
+
+  function normalizePosition(value) {
+    if (!value) {
+      return null;
+    }
+
+    const x = Number(value.x);
+    const y = Number(value.y);
+    const z = Number(value.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+      return null;
+    }
+
+    return {
+      x: Math.trunc(x),
+      y: Math.trunc(y),
+      z: Math.trunc(z),
+    };
+  }
+
+  function normalizeWaypoint(waypoint) {
+    return normalizePosition(waypoint);
+  }
+
+  function normalizeRoute(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.map(normalizeWaypoint).filter(Boolean);
+  }
+
+  function normalizeTransition(transition) {
+    if (!transition) {
+      return null;
+    }
+
+    const from = normalizePosition(transition.from || transition);
+    const to = normalizePosition(transition.to || {
+      x: transition.targetX,
+      y: transition.targetY,
+      z: transition.targetZ,
+    });
+
+    if (!from || !to || from.z === to.z) {
+      return null;
+    }
+
+    const count = Math.max(1, Math.trunc(Number(transition.count) || 1));
+    const lastSeenAt = Math.max(0, Math.trunc(Number(transition.lastSeenAt) || Date.now()));
+
+    return { from, to, count, lastSeenAt };
+  }
+
+  function normalizeTransitions(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const deduped = new Map();
+    value.map(normalizeTransition).filter(Boolean).forEach((transition) => {
+      deduped.set(getPositionKey(transition.from), transition);
+    });
+    return Array.from(deduped.values());
+  }
+
+  function getRoute() {
+    return route.map((waypoint) => cloneValue(waypoint));
+  }
+
+  function getTransitions() {
+    return transitions.map((transition) => cloneValue(transition));
+  }
+
+  function getCurrentWaypoint() {
+    if (!route.length) {
+      return null;
+    }
+
+    if (state.currentIndex < 0 || state.currentIndex >= route.length) {
+      state.currentIndex = 0;
+    }
+
+    return route[state.currentIndex] || null;
+  }
+
+  function getPositionKey(position) {
+    return position ? `${position.x},${position.y},${position.z}` : null;
+  }
+
+  function getDistance(from, to) {
+    if (!from || !to || Number(from.z) !== Number(to.z)) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    return Math.abs(Number(from.x) - Number(to.x)) + Math.abs(Number(from.y) - Number(to.y));
+  }
+
+  function getDistanceToWaypoint(position, waypoint) {
+    if (!position || !waypoint) {
+      return null;
+    }
+
+    return getDistance(position, waypoint);
+  }
+
+  function isSameTile(a, b) {
+    if (!a || !b) {
+      return false;
+    }
+
+    return Number(a.x) === Number(b.x) &&
+      Number(a.y) === Number(b.y) &&
+      Number(a.z) === Number(b.z);
+  }
+
+  function findClosestWaypointIndex(position) {
+    if (!position || !route.length) {
+      return 0;
+    }
+
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    route.forEach((waypoint, index) => {
+      const distance = getDistanceToWaypoint(position, waypoint);
+      if (!Number.isFinite(distance)) {
+        return;
+      }
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+
+    return bestIndex;
+  }
+
+  function getTileAt(position) {
+    if (!position) {
+      return null;
+    }
+
+    return window.gameClient?.world?.getTileFromWorldPosition?.(
+      new Position(position.x, position.y, position.z)
+    ) || null;
+  }
+
+  function getTilePosition(tile) {
+    return normalizePosition(tile?.__position);
+  }
+
+  function getFloorChangeDefinition(itemId) {
+    if (!itemId) {
+      return null;
+    }
+
+    return (
+      window.gameClient?.itemDefinitionsByCid?.[itemId] ||
+      window.gameClient?.itemDefinitions?.[itemId] ||
+      null
+    );
+  }
+
+  function isFloorChangeThing(thing) {
+    const definition = getFloorChangeDefinition(thing?.id);
+    return !!definition?.properties?.floorchange;
+  }
+
+  function isFloorChangeTile(tile) {
+    const tilePosition = getTilePosition(tile);
+    if (!tilePosition) {
+      return false;
+    }
+
+    if (isFloorChangeThing(tile)) {
+      return true;
+    }
+
+    return Array.isArray(tile.items) && tile.items.some((item) => isFloorChangeThing(item));
+  }
+
+  function getLoadedTiles() {
+    const chunks = window.gameClient?.world?.chunks || [];
+    const tiles = [];
+
+    for (const chunk of chunks) {
+      if (!chunk?.tiles) continue;
+
+      for (const tile of chunk.tiles) {
+        if (tile?.__position) {
+          tiles.push(tile);
+        }
+      }
+    }
+
+    return tiles;
+  }
+
+  function getNearbyFloorChangeTiles(position, radius = 8) {
+    if (!position) {
+      return [];
+    }
+
+    return getLoadedTiles()
+      .map((tile) => ({ tile, position: getTilePosition(tile) }))
+      .filter((entry) =>
+        entry.position &&
+        entry.position.z === position.z &&
+        Math.abs(entry.position.x - position.x) <= radius &&
+        Math.abs(entry.position.y - position.y) <= radius &&
+        isFloorChangeTile(entry.tile)
+      );
+  }
+
+  function findFloorChangeTileNearPosition(position, radius = 1) {
+    if (!position) {
+      return null;
+    }
+
+    let best = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    getNearbyFloorChangeTiles(position, radius).forEach((entry) => {
+      const distance = getDistance(position, entry.position);
+      if (!Number.isFinite(distance)) {
+        return;
+      }
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = entry;
+      }
+    });
+
+    return best;
+  }
+
+  function findBestKnownTransition(position, waypoint) {
+    if (!position || !waypoint) {
+      return null;
+    }
+
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    transitions.forEach((transition) => {
+      if (transition.from.z !== position.z || transition.to.z !== waypoint.z) {
+        return;
+      }
+
+      const playerDistance = getDistance(position, transition.from);
+      const landingDistance = getDistance(transition.to, waypoint);
+      if (!Number.isFinite(playerDistance) || !Number.isFinite(landingDistance)) {
+        return;
+      }
+
+      const score = playerDistance * 10 + landingDistance;
+      if (score < bestScore) {
+        bestScore = score;
+        best = transition;
+      }
+    });
+
+    return best;
+  }
+
+  function findNearbyFloorChangeTile(position, waypoint) {
+    if (!position || !waypoint) {
+      return null;
+    }
+
+    const waypointDistance = Math.abs(position.x - waypoint.x) + Math.abs(position.y - waypoint.y);
+    const radius = Math.max(4, Math.min(20, waypointDistance + 2));
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    getNearbyFloorChangeTiles(position, radius).forEach((entry) => {
+      const playerDistance = getDistance(position, entry.position);
+      const tileToWaypointDistance =
+        Math.abs(entry.position.x - waypoint.x) + Math.abs(entry.position.y - waypoint.y);
+      const score = playerDistance * 10 + tileToWaypointDistance;
+
+      if (score < bestScore) {
+        bestScore = score;
+        best = {
+          tile: entry.tile,
+          position: entry.position,
+          playerDistance,
+          waypointDistance: tileToWaypointDistance,
+        };
+      }
+    });
+
+    return best;
+  }
+
+  function isAtWaypoint(position, waypoint) {
+    const distance = getDistanceToWaypoint(position, waypoint);
+    if (!Number.isFinite(distance)) {
+      return false;
+    }
+
+    return distance <= Math.max(0, Number(config.waypointTolerance) || 0);
+  }
+
+  function goToWaypoint(waypoint) {
+    const from = bot.getPlayerPosition();
+    if (!from || !waypoint) {
+      return false;
+    }
+
+    const to = new Position(waypoint.x, waypoint.y, waypoint.z);
+
+    try {
+      window.gameClient?.world?.pathfinder?.findPath?.(from, to);
+      state.lastPathAt = Date.now();
+      bot.log("cave pathing to waypoint", {
+        ...waypoint,
+        index: state.currentIndex + 1,
+        total: route.length,
+      });
+      return true;
+    } catch (error) {
+      bot.log("cave pathing failed", { ...waypoint, error: error?.message || error });
+      return false;
+    }
+  }
+
+  function goToPosition(position) {
+    if (!position) {
+      return false;
+    }
+
+    return goToWaypoint(position);
+  }
+
+  function markPendingTransitionSource(source) {
+    const normalized = normalizePosition(source);
+    if (!normalized) {
+      return;
+    }
+
+    state.pendingTransitionSource = {
+      ...normalized,
+      at: Date.now(),
+    };
+  }
+
+  function upsertTransition(from, to) {
+    const normalizedFrom = normalizePosition(from);
+    const normalizedTo = normalizePosition(to);
+    if (!normalizedFrom || !normalizedTo || normalizedFrom.z === normalizedTo.z) {
+      return null;
+    }
+
+    const key = getPositionKey(normalizedFrom);
+    const index = transitions.findIndex((transition) => getPositionKey(transition.from) === key);
+    const next = {
+      from: normalizedFrom,
+      to: normalizedTo,
+      count: index >= 0 ? transitions[index].count + 1 : 1,
+      lastSeenAt: Date.now(),
+    };
+
+    if (index >= 0) {
+      transitions[index] = next;
+    } else {
+      transitions.push(next);
+    }
+
+    persistTransitions();
+    bot.log("cave learned floor transition", next);
+    return cloneValue(next);
+  }
+
+  function resolveObservedTransitionSource(previousPosition) {
+    const pending = normalizePosition(state.pendingTransitionSource);
+    if (pending && pending.z === previousPosition.z) {
+      return pending;
+    }
+
+    const currentTile = getTileAt(previousPosition);
+    if (currentTile && isFloorChangeTile(currentTile)) {
+      return previousPosition;
+    }
+
+    const nearby = findFloorChangeTileNearPosition(previousPosition, 1);
+    if (nearby?.position) {
+      return nearby.position;
+    }
+
+    return null;
+  }
+
+  function observePosition() {
+    const current = normalizePosition(bot.getPlayerPosition());
+    if (!current) {
+      return;
+    }
+
+    const previous = state.lastObservedPosition;
+    if (previous && !isSameTile(previous, current) && previous.z !== current.z) {
+      const source = resolveObservedTransitionSource(previous);
+      if (source) {
+        upsertTransition(source, current);
+      }
+      state.pendingTransitionSource = null;
+    }
+
+    state.lastObservedPosition = current;
+  }
+
+  function useFloorChangeTile(target, waypoint, now = Date.now()) {
+    const position = normalizePosition(bot.getPlayerPosition());
+    if (!position || !target) {
+      return false;
+    }
+
+    if (!isSameTile(position, target.position)) {
+      return goToPosition(target.position);
+    }
+
+    if (now - state.lastStairsUseAt < 1200) {
+      return true;
+    }
+
+    const currentTile = getTileAt(position);
+    if (!currentTile || !isFloorChangeTile(currentTile)) {
+      return false;
+    }
+
+    window.gameClient?.mouse?.use?.({ which: currentTile, index: 0xFF });
+    state.lastStairsUseAt = now;
+    state.lastPathAt = now;
+    markPendingTransitionSource(position);
+    bot.log("cave used floor-change tile", {
+      source: position,
+      targetZ: waypoint?.z ?? null,
+    });
+    return true;
+  }
+
+  function handleFloorChange(waypoint, now = Date.now()) {
+    const position = normalizePosition(bot.getPlayerPosition());
+    if (!position || !waypoint || position.z === waypoint.z) {
+      return false;
+    }
+
+    const knownTransition = findBestKnownTransition(position, waypoint);
+    if (knownTransition) {
+      const target = {
+        tile: getTileAt(knownTransition.from),
+        position: knownTransition.from,
+      };
+      const moved = useFloorChangeTile(target, waypoint, now);
+      if (moved) {
+        bot.log("cave using learned floor transition", {
+          from: knownTransition.from,
+          to: knownTransition.to,
+          waypoint,
+        });
+      }
+      return moved;
+    }
+
+    const fallback = findNearbyFloorChangeTile(position, waypoint);
+    if (!fallback) {
+      return false;
+    }
+
+    const moved = useFloorChangeTile(fallback, waypoint, now);
+    if (moved) {
+      bot.log("cave probing floor-change tile", {
+        tileX: fallback.position.x,
+        tileY: fallback.position.y,
+        tileZ: fallback.position.z,
+        targetZ: waypoint.z,
+      });
+    }
+    return moved;
+  }
+
+  function advanceWaypoint() {
+    if (!route.length) {
+      return null;
+    }
+
+    if (route.length === 1) {
+      return route[0];
+    }
+
+    let nextIndex = state.currentIndex + state.direction;
+
+    if (nextIndex >= route.length) {
+      state.direction = -1;
+      nextIndex = route.length - 2;
+    } else if (nextIndex < 0) {
+      state.direction = 1;
+      nextIndex = 1;
+    }
+
+    state.currentIndex = Math.max(0, Math.min(route.length - 1, nextIndex));
+
+    const nextWaypoint = getCurrentWaypoint();
+    bot.log("cave advanced waypoint", {
+      index: state.currentIndex + 1,
+      total: route.length,
+      direction: state.direction,
+      waypoint: nextWaypoint,
+    });
+    return nextWaypoint;
+  }
+
+  function scheduleNextTick() {
+    if (!state.running) return;
+
+    state.timerId = window.setTimeout(() => {
+      tick();
+    }, config.tickMs);
+  }
+
+  function tick() {
+    if (!state.running) return;
+
+    try {
+      observePosition();
+
+      if (!route.length) {
+        stop();
+        return;
+      }
+
+      const position = normalizePosition(bot.getPlayerPosition());
+      const positionKey = getPositionKey(position);
+      const now = Date.now();
+
+      if (positionKey && positionKey !== state.lastPositionKey) {
+        state.lastPositionKey = positionKey;
+        state.lastProgressAt = now;
+      }
+
+      let waypoint = getCurrentWaypoint();
+      if (!waypoint) {
+        stop();
+        return;
+      }
+
+      if (isAtWaypoint(position, waypoint)) {
+        waypoint = advanceWaypoint();
+      }
+
+      if (!waypoint) {
+        return;
+      }
+
+      if (position && waypoint.z !== position.z) {
+        handleFloorChange(waypoint, now);
+        return;
+      }
+
+      const shouldRepath =
+        now - state.lastPathAt >= config.repathMs ||
+        !state.lastProgressAt ||
+        now - state.lastProgressAt >= config.repathMs;
+
+      if (shouldRepath) {
+        goToWaypoint(waypoint);
+      }
+    } catch (error) {
+      bot.log("cave tick failed", error?.message || error);
+    } finally {
+      scheduleNextTick();
+    }
+  }
+
+  function startObserver() {
+    if (state.observerTimerId != null) {
+      return;
+    }
+
+    state.observerTimerId = window.setInterval(() => {
+      try {
+        observePosition();
+      } catch (error) {
+        bot.log("cave observer failed", error?.message || error);
+      }
+    }, 200);
+  }
+
+  function stopObserver() {
+    if (state.observerTimerId == null) {
+      return;
+    }
+
+    window.clearInterval(state.observerTimerId);
+    state.observerTimerId = null;
+  }
+
+  function start(overrides = {}) {
+    Object.assign(config, overrides, { enabled: true });
+    config.tickMs = 500;
+    persistConfig();
+
+    if (!route.length) {
+      bot.log("cave bot cannot start without waypoints");
+      return false;
+    }
+
+    if (state.running) {
+      bot.log("cave bot already running");
+      return false;
+    }
+
+    const position = normalizePosition(bot.getPlayerPosition());
+    state.running = true;
+    state.currentIndex = findClosestWaypointIndex(position);
+    state.direction = state.currentIndex >= route.length - 1 ? -1 : 1;
+    if (route.length <= 1) {
+      state.direction = 1;
+    }
+    state.lastPathAt = 0;
+    state.lastPositionKey = getPositionKey(position);
+    state.lastProgressAt = Date.now();
+    bot.log("cave bot started", {
+      waypoints: route.length,
+      currentIndex: state.currentIndex + 1,
+      direction: state.direction,
+      waypoint: getCurrentWaypoint(),
+    });
+    tick();
+    return true;
+  }
+
+  function stop() {
+    state.running = false;
+
+    if (state.timerId != null) {
+      window.clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+
+    config.enabled = false;
+    persistConfig();
+    bot.log("cave bot stopped");
+    return true;
+  }
+
+  function addWaypoint(waypoint) {
+    const normalized = normalizeWaypoint(waypoint);
+    if (!normalized) {
+      return null;
+    }
+
+    route.push(normalized);
+    persistRoute();
+    bot.log("cave waypoint added", { ...normalized, total: route.length });
+    return cloneValue(normalized);
+  }
+
+  function addWaypointCurrentSpot() {
+    const position = normalizePosition(bot.getPlayerPosition());
+    if (!position) {
+      bot.log("could not read current position for cave waypoint");
+      return null;
+    }
+
+    return addWaypoint(position);
+  }
+
+  function clearWaypoints() {
+    route = [];
+    state.currentIndex = 0;
+    state.direction = 1;
+    persistRoute();
+    bot.log("cave route cleared");
+
+    if (state.running) {
+      stop();
+    }
+
+    return [];
+  }
+
+  function clearTransitions() {
+    transitions = [];
+    state.pendingTransitionSource = null;
+    persistTransitions();
+    bot.log("cave learned transitions cleared");
+    return [];
+  }
+
+  function removeLastWaypoint() {
+    if (!route.length) {
+      return null;
+    }
+
+    const removed = route.pop();
+    if (state.currentIndex >= route.length) {
+      state.currentIndex = Math.max(0, route.length - 1);
+    }
+    if (route.length <= 1) {
+      state.direction = 1;
+    }
+    persistRoute();
+    bot.log("cave waypoint removed", removed);
+
+    if (!route.length && state.running) {
+      stop();
+    }
+
+    return removed;
+  }
+
+  function setCurrentIndex(index) {
+    if (!route.length) {
+      state.currentIndex = 0;
+      state.direction = 1;
+      return 0;
+    }
+
+    const nextIndex = Math.max(0, Math.min(route.length - 1, Math.trunc(Number(index) || 0)));
+    state.currentIndex = nextIndex;
+    state.direction = nextIndex >= route.length - 1 ? -1 : 1;
+    if (route.length <= 1) {
+      state.direction = 1;
+    }
+    return state.currentIndex;
+  }
+
+  function status() {
+    const position = normalizePosition(bot.getPlayerPosition());
+    const waypoint = getCurrentWaypoint();
+
+    return {
+      running: state.running,
+      config: { ...config },
+      route: getRoute(),
+      transitions: getTransitions(),
+      currentIndex: state.currentIndex,
+      direction: state.direction,
+      currentWaypoint: cloneValue(waypoint),
+      distanceToWaypoint: getDistanceToWaypoint(position, waypoint),
+      lastPathAt: state.lastPathAt,
+      lastProgressAt: state.lastProgressAt,
+      pendingTransitionSource: cloneValue(state.pendingTransitionSource),
+    };
+  }
+
+  function updateConfig(nextConfig = {}) {
+    Object.assign(config, nextConfig);
+    config.tickMs = 500;
+    persistConfig();
+    bot.log("cave config updated", { ...config });
+    return { ...config };
+  }
+
+  startObserver();
+  bot.addCleanup(stopObserver);
+
+  if (config.enabled && route.length) {
+    start();
+  }
+
+  bot.cave = {
+    start,
+    stop,
+    status,
+    updateConfig,
+    config,
+    getRoute,
+    getTransitions,
+    getCurrentWaypoint,
+    addWaypoint,
+    addWaypointCurrentSpot,
+    clearWaypoints,
+    clearTransitions,
+    removeLastWaypoint,
+    setCurrentIndex,
+    goToWaypoint,
+    goToPosition,
+    handleFloorChange,
+    findClosestWaypointIndex,
+    isAtWaypoint,
+  };
+};
+window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+
 window.__minibiaBotBundle.installEquipRingModule = function installEquipRingModule(bot) {
   const configStorageKey = "minibiaBot.equipRing.config";
   const RING_SLOT = 8;
@@ -3032,19 +3872,22 @@ window.__minibiaBotBundle = window.__minibiaBotBundle || {};
 
 window.__minibiaBotBundle.installPanel = function installPanel(bot) {
   const panelPositionKey = "minibiaBot.ui.panelPosition";
+  const cavePopupPositionKey = "minibiaBot.ui.cavePopupPosition";
   const panelCollapsedKey = "minibiaBot.ui.panelCollapsed";
+  const cavePopupVisibleKey = "minibiaBot.ui.cavePopupVisible";
 
   function destroy() {
     document.getElementById("minibia-bot-panel")?.remove();
+    document.getElementById("minibia-bot-cave-popup")?.remove();
     document.getElementById("minibia-bot-style")?.remove();
   }
 
-  function savePanelPosition(position) {
-    bot.storage.set(panelPositionKey, position);
+  function savePanelPosition(position, key = panelPositionKey) {
+    bot.storage.set(key, position);
   }
 
-  function getSavedPanelPosition() {
-    return bot.storage.get(panelPositionKey, null);
+  function getSavedPanelPosition(key = panelPositionKey) {
+    return bot.storage.get(key, null);
   }
 
   function savePanelCollapsed(collapsed) {
@@ -3053,6 +3896,14 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
   function getSavedPanelCollapsed() {
     return !!bot.storage.get(panelCollapsedKey, false);
+  }
+
+  function saveCavePopupVisible(visible) {
+    bot.storage.set(cavePopupVisibleKey, !!visible);
+  }
+
+  function getSavedCavePopupVisible() {
+    return !!bot.storage.get(cavePopupVisibleKey, false);
   }
 
   function refreshHomeLabel() {
@@ -3192,6 +4043,128 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoHealToggle.checked = !!bot.heal?.status?.().running;
   }
 
+  function refreshCaveStatus() {
+    const statusLabel = document.getElementById("minibia-bot-cave-status");
+    const popupStatusLabel = document.getElementById("minibia-bot-cave-popup-status");
+    const startButton = document.getElementById("minibia-bot-cave-start");
+    const stopButton = document.getElementById("minibia-bot-cave-stop");
+    const route = bot.cave?.getRoute?.() || [];
+    const status = bot.cave?.status?.();
+
+    if (statusLabel) {
+      if (!route.length) {
+        statusLabel.textContent = "Status: no waypoints";
+      } else if (status?.running) {
+        const waypointNumber = (status.currentIndex ?? 0) + 1;
+        const distanceLabel =
+          Number.isFinite(status?.distanceToWaypoint) && status.distanceToWaypoint >= 0
+            ? `, dist ${status.distanceToWaypoint}`
+            : "";
+        statusLabel.textContent = `Status: running (${waypointNumber}/${route.length}${distanceLabel})`;
+      } else {
+        statusLabel.textContent = `Status: idle (${route.length} waypoint${route.length === 1 ? "" : "s"})`;
+      }
+    }
+
+    if (popupStatusLabel) {
+      popupStatusLabel.textContent =
+        statusLabel?.textContent || "Status: no waypoints";
+    }
+
+    if (startButton) {
+      startButton.disabled = !route.length || !!status?.running;
+    }
+
+    if (stopButton) {
+      stopButton.disabled = !status?.running;
+    }
+  }
+
+  function renderCaveWaypoints() {
+    const list = document.getElementById("minibia-bot-cave-waypoints");
+    if (!list) return;
+
+    const route = bot.cave?.getRoute?.() || [];
+    const currentIndex = bot.cave?.status?.().currentIndex ?? 0;
+    list.innerHTML = "";
+
+    if (!route.length) {
+      const empty = document.createElement("div");
+      empty.className = "mb-small-note";
+      empty.textContent = "No waypoints recorded.";
+      list.appendChild(empty);
+      refreshCaveStatus();
+      return;
+    }
+
+    route.forEach((waypoint, index) => {
+      const row = document.createElement("div");
+      row.className = "mb-list-row";
+
+      const label = document.createElement("span");
+      const active = bot.cave?.status?.().running && index === currentIndex;
+      label.textContent = `${index + 1}. ${waypoint.x}, ${waypoint.y}, ${waypoint.z}${active ? " *" : ""}`;
+
+      row.appendChild(label);
+      list.appendChild(row);
+    });
+
+    refreshCaveStatus();
+  }
+
+  function refreshCaveClosestStatus() {
+    const label = document.getElementById("minibia-bot-cave-closest");
+    if (!label) return;
+
+    const position = bot.getPlayerPosition?.();
+    const route = bot.cave?.getRoute?.() || [];
+
+    if (!position) {
+      label.textContent = "Closest start: current position unavailable";
+      return;
+    }
+
+    if (!route.length) {
+      label.textContent = "Closest start: no waypoints";
+      return;
+    }
+
+    const closestIndex = bot.cave?.findClosestWaypointIndex?.(position) ?? 0;
+    const waypoint = route[closestIndex];
+
+    if (!waypoint) {
+      label.textContent = "Closest start: unavailable";
+      return;
+    }
+
+    label.textContent = `Closest start: ${closestIndex + 1}. ${waypoint.x}, ${waypoint.y}, ${waypoint.z}`;
+  }
+
+  function refreshCaveTransitionStatus() {
+    const label = document.getElementById("minibia-bot-cave-transition-status");
+    if (!label) return;
+
+    const transitions = bot.cave?.getTransitions?.() || [];
+    if (!transitions.length) {
+      label.textContent = "Transitions learned: none";
+      return;
+    }
+
+    const latest = transitions
+      .slice()
+      .sort((a, b) => Number(b?.lastSeenAt || 0) - Number(a?.lastSeenAt || 0))[0];
+
+    if (!latest?.from || !latest?.to) {
+      label.textContent = `Transitions learned: ${transitions.length}`;
+      return;
+    }
+
+    const extra = transitions.length > 1 ? ` (+${transitions.length - 1} more)` : "";
+    label.textContent =
+      `Transitions learned: ${latest.from.x}, ${latest.from.y}, ${latest.from.z} -> ` +
+      `${latest.to.x}, ${latest.to.y}, ${latest.to.z}${extra}`;
+  }
+
   function refreshEquipRingStatus() {
     const equipRingToggle = document.getElementById("minibia-bot-equip-ring-enabled");
     if (!equipRingToggle) return;
@@ -3317,8 +4290,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     savePanelCollapsed(nextCollapsed);
   }
 
-  function applySavedPanelPosition(panel) {
-    const position = getSavedPanelPosition();
+  function applySavedPanelPosition(panel, key = panelPositionKey) {
+    const position = getSavedPanelPosition(key);
     if (!position) return;
 
     if (typeof position.top === "number") {
@@ -3341,7 +4314,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     };
   }
 
-  function enableDrag(panel) {
+  function enableDrag(panel, key = panelPositionKey) {
     const handle = panel.querySelector(".mb-title");
     if (!handle) return;
 
@@ -3366,7 +4339,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
       dragState = null;
       const rect = panel.getBoundingClientRect();
-      savePanelPosition({ left: rect.left, top: rect.top });
+      savePanelPosition({ left: rect.left, top: rect.top }, key);
     };
 
     handle.addEventListener("mousedown", (event) => {
@@ -3396,12 +4369,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const style = document.createElement("style");
     style.id = "minibia-bot-style";
     style.textContent = `
-      #minibia-bot-panel {
+      #minibia-bot-panel,
+      #minibia-bot-cave-popup {
         position: fixed;
-        top: 16px;
-        right: 16px;
         z-index: 999999;
-        width: 640px;
         max-width: calc(100vw - 32px);
         padding: 12px;
         border: 1px solid rgba(224, 200, 148, 0.45);
@@ -3413,11 +4384,24 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         user-select: none;
       }
 
+      #minibia-bot-panel {
+        top: 16px;
+        right: 16px;
+        width: 640px;
+      }
+
+      #minibia-bot-cave-popup {
+        top: 56px;
+        right: 56px;
+        width: 360px;
+      }
+
       #minibia-bot-panel[data-collapsed="true"] {
         width: 220px;
       }
 
-      #minibia-bot-panel .mb-title {
+      #minibia-bot-panel .mb-title,
+      #minibia-bot-cave-popup .mb-title {
         margin: 0;
         font-weight: 700;
         letter-spacing: 0.04em;
@@ -3425,7 +4409,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         cursor: move;
       }
 
-      #minibia-bot-panel .mb-titlebar {
+      #minibia-bot-panel .mb-titlebar,
+      #minibia-bot-cave-popup .mb-titlebar {
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -3433,7 +4418,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         margin: 0 0 8px;
       }
 
-      #minibia-bot-panel .mb-icon-button {
+      #minibia-bot-panel .mb-icon-button,
+      #minibia-bot-cave-popup .mb-icon-button {
         width: 24px;
         min-width: 24px;
         padding: 2px 0;
@@ -3457,13 +4443,23 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         display: none !important;
       }
 
+      #minibia-bot-cave-popup[hidden] {
+        display: none !important;
+      }
+
+      #minibia-bot-cave-popup .mb-body {
+        display: grid;
+        gap: 8px;
+      }
+
       #minibia-bot-panel .mb-side-column,
       #minibia-bot-panel .mb-main-column {
         display: grid;
         gap: 10px;
       }
 
-      #minibia-bot-panel .mb-section {
+      #minibia-bot-panel .mb-section,
+      #minibia-bot-cave-popup .mb-section {
         padding-top: 10px;
         border-top: 1px solid rgba(224, 200, 148, 0.16);
       }
@@ -3473,18 +4469,21 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         border-top: 0;
       }
 
-      #minibia-bot-panel .mb-label {
+      #minibia-bot-panel .mb-label,
+      #minibia-bot-cave-popup .mb-label {
         margin: 0 0 8px;
         color: #d3c49d;
         word-break: break-word;
       }
 
-      #minibia-bot-panel .mb-actions {
+      #minibia-bot-panel .mb-actions,
+      #minibia-bot-cave-popup .mb-actions {
         display: grid;
         gap: 6px;
       }
 
-      #minibia-bot-panel button {
+      #minibia-bot-panel button,
+      #minibia-bot-cave-popup button {
         width: 100%;
         padding: 8px 10px;
         border: 1px solid rgba(224, 200, 148, 0.35);
@@ -3495,12 +4494,15 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         cursor: pointer;
       }
 
-      #minibia-bot-panel button:hover {
+      #minibia-bot-panel button:hover,
+      #minibia-bot-cave-popup button:hover {
         background: linear-gradient(180deg, #755f3d, #4f4028);
       }
 
       #minibia-bot-panel input,
-      #minibia-bot-panel textarea {
+      #minibia-bot-panel textarea,
+      #minibia-bot-cave-popup input,
+      #minibia-bot-cave-popup textarea {
         width: 100%;
         box-sizing: border-box;
         padding: 8px 10px;
@@ -3511,19 +4513,22 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         font: inherit;
       }
 
-      #minibia-bot-panel textarea {
+      #minibia-bot-panel textarea,
+      #minibia-bot-cave-popup textarea {
         min-height: 72px;
         resize: vertical;
       }
 
-      #minibia-bot-panel .mb-toggle {
+      #minibia-bot-panel .mb-toggle,
+      #minibia-bot-cave-popup .mb-toggle {
         display: flex;
         align-items: center;
         gap: 8px;
         color: #d3c49d;
       }
 
-      #minibia-bot-panel .mb-toggle input[type="checkbox"] {
+      #minibia-bot-panel .mb-toggle input[type="checkbox"],
+      #minibia-bot-cave-popup .mb-toggle input[type="checkbox"] {
         width: auto;
         margin: 0;
       }
@@ -3572,34 +4577,40 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         gap: 8px;
       }
 
-      #minibia-bot-panel .mb-field {
+      #minibia-bot-panel .mb-field,
+      #minibia-bot-cave-popup .mb-field {
         display: grid;
         gap: 4px;
       }
 
-      #minibia-bot-panel .mb-field-label {
+      #minibia-bot-panel .mb-field-label,
+      #minibia-bot-cave-popup .mb-field-label {
         color: #d3c49d;
         font-size: 11px;
       }
 
-      #minibia-bot-panel .mb-stack {
+      #minibia-bot-panel .mb-stack,
+      #minibia-bot-cave-popup .mb-stack {
         display: grid;
         gap: 8px;
       }
 
-      #minibia-bot-panel .mb-inline {
+      #minibia-bot-panel .mb-inline,
+      #minibia-bot-cave-popup .mb-inline {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 6px;
         align-items: center;
       }
 
-      #minibia-bot-panel .mb-list {
+      #minibia-bot-panel .mb-list,
+      #minibia-bot-cave-popup .mb-list {
         display: grid;
         gap: 6px;
       }
 
-      #minibia-bot-panel .mb-list-row {
+      #minibia-bot-panel .mb-list-row,
+      #minibia-bot-cave-popup .mb-list-row {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 6px;
@@ -3640,18 +4651,21 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         padding-right: 2px;
       }
 
-      #minibia-bot-panel .mb-small-button {
+      #minibia-bot-panel .mb-small-button,
+      #minibia-bot-cave-popup .mb-small-button {
         width: auto;
         padding: 4px 8px;
         border-radius: 6px;
       }
 
-      #minibia-bot-panel .mb-small-note {
+      #minibia-bot-panel .mb-small-note,
+      #minibia-bot-cave-popup .mb-small-note {
         color: #b7a67d;
         font-size: 11px;
       }
 
-      #minibia-bot-panel .mb-note {
+      #minibia-bot-panel .mb-note,
+      #minibia-bot-cave-popup .mb-note {
         margin-top: 8px;
         color: #b7a67d;
         font-size: 11px;
@@ -3740,6 +4754,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
               </div>
             </div>
           </div>
+          <div class="mb-section mb-column-section">
+            <div class="mb-label">Cave Bot</div>
+            <div class="mb-stack">
+              <button type="button" id="minibia-bot-open-cave-popup">Open Cave Bot</button>
+              <div class="mb-small-note" id="minibia-bot-cave-status">Status: no waypoints</div>
+            </div>
+          </div>
           <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, and talk.</div>
         </div>
         <div class="mb-side-column">
@@ -3796,20 +4817,61 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     `;
     document.body.appendChild(panel);
 
+    const cavePopup = document.createElement("div");
+    cavePopup.id = "minibia-bot-cave-popup";
+    cavePopup.hidden = !getSavedCavePopupVisible();
+    cavePopup.innerHTML = `
+      <div class="mb-titlebar">
+        <div class="mb-title">Cave Bot</div>
+        <button type="button" class="mb-icon-button" id="minibia-bot-cave-close" aria-label="Close cave bot" title="Close">x</button>
+      </div>
+      <div class="mb-body">
+        <div class="mb-section mb-column-section">
+          <div class="mb-stack">
+            <div class="mb-actions">
+              <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
+              <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
+              <button type="button" class="mb-small-button" id="minibia-bot-cave-clear">Clear</button>
+              <button type="button" class="mb-small-button" id="minibia-bot-cave-clear-transitions">Clear Learned Transitions</button>
+            </div>
+            <div class="mb-actions">
+              <button type="button" class="mb-small-button" id="minibia-bot-cave-refresh-closest">Refresh Closest</button>
+            </div>
+            <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
+            <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
+            <div class="mb-actions">
+              <button type="button" class="mb-small-button" id="minibia-bot-cave-start">Start</button>
+              <button type="button" class="mb-small-button" id="minibia-bot-cave-stop">Stop</button>
+            </div>
+            <div class="mb-small-note" id="minibia-bot-cave-popup-status">Status: no waypoints</div>
+            <div class="mb-small-note">Record Spot saves only route tiles. Floor changes are learned automatically from observed z-changes near floor-change tiles.</div>
+            <div class="mb-list" id="minibia-bot-cave-waypoints"></div>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(cavePopup);
+
     const unlockAudio = () => {
       bot.unlockAudio?.();
     };
 
     panel.addEventListener("pointerdown", unlockAudio, { passive: true });
     panel.addEventListener("keydown", unlockAudio);
+    cavePopup.addEventListener("pointerdown", unlockAudio, { passive: true });
+    cavePopup.addEventListener("keydown", unlockAudio);
 
     bot.addCleanup(() => {
       panel.removeEventListener("pointerdown", unlockAudio);
       panel.removeEventListener("keydown", unlockAudio);
+      cavePopup.removeEventListener("pointerdown", unlockAudio);
+      cavePopup.removeEventListener("keydown", unlockAudio);
     });
 
     applySavedPanelPosition(panel);
+    applySavedPanelPosition(cavePopup, cavePopupPositionKey);
     enableDrag(panel);
+    enableDrag(cavePopup, cavePopupPositionKey);
     setPanelCollapsed(panel, getSavedPanelCollapsed());
 
     const spellInput = panel.querySelector("#minibia-bot-rune-spell");
@@ -3817,6 +4879,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const runeEnabledInput = panel.querySelector("#minibia-bot-rune-enabled");
     const autoEatEnabledInput = panel.querySelector("#minibia-bot-auto-eat-enabled");
     const equipRingEnabledInput = panel.querySelector("#minibia-bot-equip-ring-enabled");
+    const openCavePopupButton = panel.querySelector("#minibia-bot-open-cave-popup");
     const autoHealEnabledInput = panel.querySelector("#minibia-bot-auto-heal-enabled");
     const autoHealMinHpInput = panel.querySelector("#minibia-bot-auto-heal-min-hp");
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-hp-hotkey");
@@ -3834,6 +4897,19 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const xrayOverlayButton = panel.querySelector("#minibia-bot-xray-overlay-toggle");
     const collapseButton = panel.querySelector("#minibia-bot-collapse");
     const reloadButton = panel.querySelector("#minibia-bot-reload");
+    const caveRecordButton = cavePopup.querySelector("#minibia-bot-cave-record");
+    const caveRemoveLastButton = cavePopup.querySelector("#minibia-bot-cave-remove-last");
+    const caveClearButton = cavePopup.querySelector("#minibia-bot-cave-clear");
+    const caveClearTransitionsButton = cavePopup.querySelector("#minibia-bot-cave-clear-transitions");
+    const caveRefreshClosestButton = cavePopup.querySelector("#minibia-bot-cave-refresh-closest");
+    const caveStartButton = cavePopup.querySelector("#minibia-bot-cave-start");
+    const caveStopButton = cavePopup.querySelector("#minibia-bot-cave-stop");
+    const caveCloseButton = cavePopup.querySelector("#minibia-bot-cave-close");
+
+    function setCavePopupVisible(visible) {
+      cavePopup.hidden = !visible;
+      saveCavePopupVisible(visible);
+    }
 
     if (collapseButton) {
       collapseButton.addEventListener("click", () => {
@@ -3845,6 +4921,18 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (reloadButton) {
       reloadButton.addEventListener("click", () => {
         window.minibiaBotReload?.();
+      });
+    }
+
+    if (openCavePopupButton) {
+      openCavePopupButton.addEventListener("click", () => {
+        setCavePopupVisible(true);
+      });
+    }
+
+    if (caveCloseButton) {
+      caveCloseButton.addEventListener("click", () => {
+        setCavePopupVisible(false);
       });
     }
 
@@ -3973,6 +5061,63 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         }
 
         refreshEquipRingStatus();
+      });
+    }
+
+    if (caveRecordButton) {
+      caveRecordButton.addEventListener("click", () => {
+        bot.cave.addWaypointCurrentSpot();
+        renderCaveWaypoints();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    if (caveRemoveLastButton) {
+      caveRemoveLastButton.addEventListener("click", () => {
+        bot.cave.removeLastWaypoint();
+        renderCaveWaypoints();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    if (caveClearButton) {
+      caveClearButton.addEventListener("click", () => {
+        bot.cave.clearWaypoints();
+        renderCaveWaypoints();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    if (caveClearTransitionsButton) {
+      caveClearTransitionsButton.addEventListener("click", () => {
+        bot.cave.clearTransitions();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    if (caveRefreshClosestButton) {
+      caveRefreshClosestButton.addEventListener("click", () => {
+        refreshCaveClosestStatus();
+      });
+    }
+
+    if (caveStartButton) {
+      caveStartButton.addEventListener("click", () => {
+        bot.cave.start();
+        renderCaveWaypoints();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
+      });
+    }
+
+    if (caveStopButton) {
+      caveStopButton.addEventListener("click", () => {
+        bot.cave.stop();
+        renderCaveWaypoints();
+        refreshCaveClosestStatus();
+        refreshCaveTransitionStatus();
       });
     }
 
@@ -4108,9 +5253,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshRuneStatus();
     refreshAutoHealStatus();
     refreshAutoEatStatus();
+    refreshCaveStatus();
     refreshEquipRingStatus();
     refreshTalkStatus();
     refreshVisibleCreatures();
+    renderCaveWaypoints();
+    refreshCaveClosestStatus();
+    refreshCaveTransitionStatus();
 
     const visibleCreaturesTimerId = window.setInterval(refreshVisibleCreatures, 1000);
     bot.addCleanup(() => {
@@ -4120,6 +5269,16 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const talkStatusTimerId = window.setInterval(refreshTalkStatus, 1000);
     bot.addCleanup(() => {
       window.clearInterval(talkStatusTimerId);
+    });
+
+    const caveStatusTimerId = window.setInterval(() => {
+      refreshCaveStatus();
+      renderCaveWaypoints();
+      refreshCaveClosestStatus();
+      refreshCaveTransitionStatus();
+    }, 1000);
+    bot.addCleanup(() => {
+      window.clearInterval(caveStatusTimerId);
     });
 
   }
@@ -4133,9 +5292,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshRuneStatus,
     refreshAutoHealStatus,
     refreshAutoEatStatus,
+    refreshCaveStatus,
     refreshEquipRingStatus,
     refreshTalkStatus,
     refreshVisibleCreatures,
+    renderCaveWaypoints,
+    refreshCaveClosestStatus,
+    refreshCaveTransitionStatus,
     getSavedPanelPosition,
     getSavedPanelCollapsed,
     setPanelCollapsed: (collapsed) => {
@@ -4159,6 +5322,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     currentBundle.installPanicModule(bot);
     currentBundle.installRuneModule(bot);
     currentBundle.installHealModule(bot);
+    currentBundle.installCaveModule(bot);
     currentBundle.installEquipRingModule(bot);
     currentBundle.installAutoEatModule(bot);
     currentBundle.installTalkModule(bot);
@@ -4178,6 +5342,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       panic: bot.panic.status(),
       rune: bot.rune.status(),
       heal: bot.heal.status(),
+      cave: bot.cave.status(),
       equipRing: bot.equipRing.status(),
       eat: bot.eat.status(),
       talk: bot.talk.status(),
@@ -4188,7 +5353,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "equipRing", "eat", "talk", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "cave", "equipRing", "eat", "talk", "ui"],
     });
     console.log("minibiaBot.reload()");
     console.log("minibiaBot.xray.status()");
@@ -4200,6 +5365,9 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     console.log("minibiaBot.rune.stop()");
     console.log("minibiaBot.heal.start()");
     console.log("minibiaBot.heal.stop()");
+    console.log("minibiaBot.cave.addWaypointCurrentSpot()");
+    console.log("minibiaBot.cave.start()");
+    console.log("minibiaBot.cave.stop()");
     console.log("minibiaBot.equipRing.start()");
     console.log("minibiaBot.equipRing.stop()");
     console.log("minibiaBot.eat.start()");

@@ -8,6 +8,7 @@ cat \
   src/modules/panic.js \
   src/modules/rune.js \
   src/modules/heal.js \
+  src/modules/cave.js \
   src/modules/equip-ring.js \
   src/modules/auto-eat.js \
   src/modules/talk.js \
