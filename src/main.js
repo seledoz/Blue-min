@@ -14,6 +14,7 @@
     currentBundle.installRuneModule(bot);
     currentBundle.installHealModule(bot);
     currentBundle.installAutoEatModule(bot);
+    currentBundle.installTalkModule(bot);
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
@@ -31,6 +32,7 @@
       rune: bot.rune.status(),
       heal: bot.heal.status(),
       eat: bot.eat.status(),
+      talk: bot.talk.status(),
     });
 
     window.minibiaBot = bot;
@@ -38,7 +40,7 @@
 
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "eat", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "eat", "talk", "ui"],
     });
     console.log("minibiaBot.reload()");
     console.log("minibiaBot.xray.status()");
@@ -52,6 +54,9 @@
     console.log("minibiaBot.heal.stop()");
     console.log("minibiaBot.eat.start()");
     console.log("minibiaBot.eat.stop()");
+    console.log("minibiaBot.talk.updateConfig({ apiKey: \"...\" })");
+    console.log("minibiaBot.talk.start()");
+    console.log("minibiaBot.talk.stop()");
     return bot;
   }
 

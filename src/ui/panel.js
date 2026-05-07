@@ -162,6 +162,28 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoHealToggle.checked = !!bot.heal?.status?.().running;
   }
 
+  function refreshTalkStatus() {
+    const talkToggle = document.getElementById("minibia-bot-talk-enabled");
+    const statusLabel = document.getElementById("minibia-bot-talk-status");
+    const status = bot.talk?.status?.();
+
+    if (talkToggle) {
+      talkToggle.checked = !!status?.running;
+    }
+
+    if (statusLabel) {
+      if (!status?.config?.apiKey) {
+        statusLabel.textContent = "Status: API key missing";
+      } else if (status?.pending) {
+        statusLabel.textContent = "Status: generating";
+      } else if (status?.running) {
+        statusLabel.textContent = "Status: listening to Default";
+      } else {
+        statusLabel.textContent = "Status: idle";
+      }
+    }
+  }
+
   function refreshVisibleCreatures() {
     const list = document.getElementById("minibia-bot-visible-creatures-list");
     if (!list) return;
@@ -674,7 +696,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
               </div>
             </div>
           </div>
-          <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, and auto eat.</div>
+          <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, auto heal, and talk.</div>
         </div>
         <div class="mb-side-column">
           <div class="mb-section mb-column-section">
@@ -711,6 +733,20 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
               <div class="mb-small-note">Checks once per second. HP is used before mana if both are low.</div>
             </div>
           </div>
+          <div class="mb-section mb-column-section">
+            <div class="mb-label">Talk</div>
+            <div class="mb-stack">
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-talk-enabled" />
+                <span>Enable Auto Reply</span>
+              </label>
+              <input type="password" id="minibia-bot-talk-api-key" placeholder="Gemini API key" />
+              <textarea id="minibia-bot-talk-prompt" placeholder="Reply style prompt"></textarea>
+              <div class="mb-small-note" id="minibia-bot-talk-status">Status: idle</div>
+              <div class="mb-small-note">Replies only to the newest unseen message in Default chat.</div>
+              <div class="mb-small-note">It will not reply to itself and will not admit it is a bot.</div>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -741,6 +777,9 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-hp-hotkey");
     const autoHealMinManaInput = panel.querySelector("#minibia-bot-auto-heal-min-mana");
     const autoHealManaHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-mana-hotkey");
+    const talkEnabledInput = panel.querySelector("#minibia-bot-talk-enabled");
+    const talkApiKeyInput = panel.querySelector("#minibia-bot-talk-api-key");
+    const talkPromptInput = panel.querySelector("#minibia-bot-talk-prompt");
     const panicGmNameInput = panel.querySelector("#minibia-bot-panic-gm-input");
     const panicGmAddButton = panel.querySelector("#minibia-bot-panic-gm-add");
     const panicUnknownInput = panel.querySelector("#minibia-bot-panic-unknown");
@@ -939,6 +978,41 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
+    if (talkApiKeyInput) {
+      talkApiKeyInput.value = bot.talk?.config?.apiKey || "";
+      talkApiKeyInput.addEventListener("change", () => {
+        bot.talk.updateConfig({ apiKey: talkApiKeyInput.value.trim() });
+        refreshTalkStatus();
+      });
+    }
+
+    if (talkPromptInput) {
+      talkPromptInput.value = bot.talk?.config?.systemPrompt || "";
+      talkPromptInput.addEventListener("change", () => {
+        bot.talk.updateConfig({ systemPrompt: talkPromptInput.value.trim() });
+      });
+    }
+
+    if (talkEnabledInput) {
+      talkEnabledInput.checked = !!bot.talk?.status?.().running;
+      talkEnabledInput.addEventListener("change", () => {
+        if (talkEnabledInput.checked) {
+          bot.talk.updateConfig({
+            apiKey: talkApiKeyInput?.value?.trim() || "",
+            systemPrompt: talkPromptInput?.value?.trim() || bot.talk.config.systemPrompt || "",
+          });
+          const started = bot.talk.start();
+          if (!started) {
+            talkEnabledInput.checked = false;
+          }
+        } else {
+          bot.talk.stop();
+        }
+
+        refreshTalkStatus();
+      });
+    }
+
     if (panicUnknownInput) {
       panicUnknownInput.checked = !!bot.panic?.status?.().config?.unknownPlayerEnabled;
       panicUnknownInput.addEventListener("change", () => {
@@ -976,11 +1050,17 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshRuneStatus();
     refreshAutoHealStatus();
     refreshAutoEatStatus();
+    refreshTalkStatus();
     refreshVisibleCreatures();
 
     const visibleCreaturesTimerId = window.setInterval(refreshVisibleCreatures, 1000);
     bot.addCleanup(() => {
       window.clearInterval(visibleCreaturesTimerId);
+    });
+
+    const talkStatusTimerId = window.setInterval(refreshTalkStatus, 1000);
+    bot.addCleanup(() => {
+      window.clearInterval(talkStatusTimerId);
     });
 
   }
@@ -994,6 +1074,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshRuneStatus,
     refreshAutoHealStatus,
     refreshAutoEatStatus,
+    refreshTalkStatus,
     refreshVisibleCreatures,
     getSavedPanelPosition,
     getSavedPanelCollapsed,
