@@ -87,3 +87,53 @@ pzBot.goToNearestPz()
 - The panel is draggable and saves its position in `localStorage`.
 - Reloading the bundle destroys the existing panel and stops the existing loops before installing the new one.
 - The served runtime is `pz-bot.js`; source lives under `src/`.
+
+
+## Download minibia source
+```
+ (async () => {
+    const fromPerf = performance.getEntriesByType("resource").map(r => r.name);
+    const fromScripts = [...document.scripts].map(s => s.src).filter(Boolean);
+
+    const urls = [...new Set([...fromPerf, ...fromScripts])]
+      .filter(url => url.includes("minibia") && /\.js(\?|$)/i.test(url))
+      .sort();
+
+    console.log(`Found ${urls.length} JS files`);
+
+    const parts = [];
+
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, { credentials: "include" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+
+        parts.push(
+          `\n\n/* ===== FILE: ${url} ===== */\n\n${text}`
+        );
+
+        console.log(`Fetched: ${url}`);
+      } catch (err) {
+        parts.push(
+          `\n\n/* ===== FAILED: ${url} =====\n${String(err)}\n===== */\n\n`
+        );
+        console.error(`Failed: ${url}`, err);
+      }
+    }
+
+    const blob = new Blob(parts, { type: "text/javascript;charset=utf-8" });
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+
+    a.href = blobUrl;
+    a.download = "minibia-all.js";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+    console.log("Downloaded minibia-all.js");
+  })();
+```

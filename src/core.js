@@ -281,6 +281,10 @@ window.__minibiaBotBundle.createBot = function createBot() {
         this.heal.stop();
       }
 
+      if (this.equipRing?.stop) {
+        this.equipRing.stop();
+      }
+
       if (this.eat?.stop) {
         this.eat.stop();
       }

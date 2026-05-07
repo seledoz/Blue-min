@@ -162,6 +162,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoHealToggle.checked = !!bot.heal?.status?.().running;
   }
 
+  function refreshEquipRingStatus() {
+    const equipRingToggle = document.getElementById("minibia-bot-equip-ring-enabled");
+    if (!equipRingToggle) return;
+
+    equipRingToggle.checked = !!bot.equipRing?.status?.().running;
+  }
+
   function refreshTalkStatus() {
     const talkToggle = document.getElementById("minibia-bot-talk-enabled");
     const statusLabel = document.getElementById("minibia-bot-talk-status");
@@ -694,9 +701,16 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 </label>
                 <div></div>
               </div>
+              <div class="mb-row">
+                <label class="mb-toggle">
+                  <input type="checkbox" id="minibia-bot-equip-ring-enabled" />
+                  <span>Equip Ring</span>
+                </label>
+                <div></div>
+              </div>
             </div>
           </div>
-          <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, auto heal, and talk.</div>
+          <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, and talk.</div>
         </div>
         <div class="mb-side-column">
           <div class="mb-section mb-column-section">
@@ -772,6 +786,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const manaInput = panel.querySelector("#minibia-bot-rune-mana");
     const runeEnabledInput = panel.querySelector("#minibia-bot-rune-enabled");
     const autoEatEnabledInput = panel.querySelector("#minibia-bot-auto-eat-enabled");
+    const equipRingEnabledInput = panel.querySelector("#minibia-bot-equip-ring-enabled");
     const autoHealEnabledInput = panel.querySelector("#minibia-bot-auto-heal-enabled");
     const autoHealMinHpInput = panel.querySelector("#minibia-bot-auto-heal-min-hp");
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-hp-hotkey");
@@ -918,6 +933,19 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
+    if (equipRingEnabledInput) {
+      equipRingEnabledInput.checked = !!bot.equipRing?.status?.().running;
+      equipRingEnabledInput.addEventListener("change", () => {
+        if (equipRingEnabledInput.checked) {
+          bot.equipRing.start();
+        } else {
+          bot.equipRing.stop();
+        }
+
+        refreshEquipRingStatus();
+      });
+    }
+
     if (autoHealMinHpInput) {
       autoHealMinHpInput.value = String(bot.heal?.config?.minHp ?? 0);
       autoHealMinHpInput.addEventListener("change", () => {
@@ -1050,6 +1078,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshRuneStatus();
     refreshAutoHealStatus();
     refreshAutoEatStatus();
+    refreshEquipRingStatus();
     refreshTalkStatus();
     refreshVisibleCreatures();
 
@@ -1074,6 +1103,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshRuneStatus,
     refreshAutoHealStatus,
     refreshAutoEatStatus,
+    refreshEquipRingStatus,
     refreshTalkStatus,
     refreshVisibleCreatures,
     getSavedPanelPosition,

@@ -281,6 +281,10 @@ window.__minibiaBotBundle.createBot = function createBot() {
         this.heal.stop();
       }
 
+      if (this.equipRing?.stop) {
+        this.equipRing.stop();
+      }
+
       if (this.eat?.stop) {
         this.eat.stop();
       }
@@ -1811,6 +1815,299 @@ window.__minibiaBotBundle.installHealModule = function installHealModule(bot) {
 };
 window.__minibiaBotBundle = window.__minibiaBotBundle || {};
 
+window.__minibiaBotBundle.installEquipRingModule = function installEquipRingModule(bot) {
+  const configStorageKey = "minibiaBot.equipRing.config";
+  const RING_SLOT = 8;
+  const state = {
+    running: false,
+    timerId: null,
+    lastEquipAt: 0,
+  };
+  let resumeListenersAttached = false;
+
+  const config = Object.assign(
+    {
+      tickMs: 1000,
+      equipCooldownMs: 1500,
+      enabled: false,
+    },
+    bot.storage.get(configStorageKey, {})
+  );
+  config.tickMs = 1000;
+
+  function persistConfig() {
+    bot.storage.set(configStorageKey, { ...config });
+  }
+
+  function getEquipment() {
+    return window.gameClient?.player?.equipment || null;
+  }
+
+  function getOpenContainers() {
+    return Array.from(window.gameClient?.player?.__openedContainers || []);
+  }
+
+  function getItemDefinition(item) {
+    if (!item) return null;
+
+    return (
+      window.gameClient?.itemDefinitionsBySid?.[item.sid] ||
+      window.gameClient?.itemDefinitions?.[item.id] ||
+      null
+    );
+  }
+
+  function getItemName(item) {
+    const definition = getItemDefinition(item);
+    return definition?.properties?.name || item?.name || "";
+  }
+
+  function isRingItem(item) {
+    if (!item) {
+      return false;
+    }
+
+    const definition = getItemDefinition(item);
+    const slotType = String(
+      definition?.properties?.slotType ||
+      definition?.properties?.slot ||
+      ""
+    ).trim().toLowerCase();
+
+    if (slotType === "ring") {
+      return true;
+    }
+
+    return /\bring\b/i.test(getItemName(item));
+  }
+
+  function getEquippedRing() {
+    const equipment = getEquipment();
+    return equipment?.getSlotItem?.(RING_SLOT) || null;
+  }
+
+  function hasEquippedRing() {
+    return !!getEquippedRing();
+  }
+
+  function findBestRingSource() {
+    const equipment = getEquipment();
+    if (!equipment) {
+      return null;
+    }
+
+    let best = null;
+    let bestCount = -1;
+
+    const consider = (container, slotIndex, item) => {
+      if (!isRingItem(item)) {
+        return;
+      }
+
+      const count = (typeof item.getCount === "function" ? item.getCount() : item.count) || 1;
+      if (count > bestCount) {
+        bestCount = count;
+        best = { container, slotIndex, item, count, name: getItemName(item) };
+      }
+    };
+
+    for (let slotIndex = 0; slotIndex < equipment.slots.length; slotIndex += 1) {
+      if (slotIndex === RING_SLOT) continue;
+      consider(equipment, slotIndex, equipment.getSlotItem(slotIndex));
+    }
+
+    getOpenContainers().forEach((container) => {
+      (container?.slots || []).forEach((slot, slotIndex) => {
+        consider(container, slotIndex, container.getSlotItem(slotIndex));
+      });
+    });
+
+    return best;
+  }
+
+  function getGateStatus(now = Date.now()) {
+    const equipment = getEquipment();
+    const source = findBestRingSource();
+    const cooldownRemainingMs = Math.max(0, config.equipCooldownMs - (now - state.lastEquipAt));
+
+    return {
+      hasEquipment: !!equipment,
+      hasRingEquipped: hasEquippedRing(),
+      hasRingAvailable: !!source,
+      cooldownReady: cooldownRemainingMs === 0,
+      cooldownRemainingMs,
+      source,
+      canEquip: !!equipment && !hasEquippedRing() && !!source && cooldownRemainingMs === 0,
+    };
+  }
+
+  function canEquipRing(now = Date.now()) {
+    return getGateStatus(now).canEquip;
+  }
+
+  function tryEquipRing(now = Date.now()) {
+    if (!config.enabled || !canEquipRing(now)) {
+      return false;
+    }
+
+    const equipment = getEquipment();
+    const source = findBestRingSource();
+    if (!equipment || !source) {
+      return false;
+    }
+
+    const from = {
+      which: source.container,
+      index: source.slotIndex,
+    };
+    const to = {
+      which: equipment,
+      index: RING_SLOT,
+    };
+    const count = source.count || 1;
+
+    window.gameClient.send(new ItemMovePacket(from, to, count));
+    state.lastEquipAt = now;
+    bot.log("equipped ring", {
+      name: source.name,
+      fromContainerId: source.container?.__containerId ?? null,
+      fromSlot: source.slotIndex,
+    });
+    return true;
+  }
+
+  function scheduleNextTick() {
+    if (!state.running) return;
+
+    state.timerId = window.setTimeout(() => {
+      tick();
+    }, config.tickMs);
+  }
+
+  function runImmediateTick() {
+    if (!state.running) return;
+
+    if (state.timerId != null) {
+      window.clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+
+    tick();
+  }
+
+  function handleResume() {
+    if (document.hidden) {
+      return;
+    }
+
+    runImmediateTick();
+  }
+
+  function attachResumeListeners() {
+    if (resumeListenersAttached) {
+      return;
+    }
+
+    document.addEventListener("visibilitychange", handleResume);
+    window.addEventListener("focus", handleResume);
+    window.addEventListener("pageshow", handleResume);
+    resumeListenersAttached = true;
+  }
+
+  function detachResumeListeners() {
+    if (!resumeListenersAttached) {
+      return;
+    }
+
+    document.removeEventListener("visibilitychange", handleResume);
+    window.removeEventListener("focus", handleResume);
+    window.removeEventListener("pageshow", handleResume);
+    resumeListenersAttached = false;
+  }
+
+  function tick() {
+    if (!state.running) return;
+
+    try {
+      tryEquipRing();
+    } catch (error) {
+      bot.log("equip ring tick failed", error?.message || error);
+    } finally {
+      scheduleNextTick();
+    }
+  }
+
+  function start(overrides = {}) {
+    Object.assign(config, overrides, { enabled: true });
+    config.tickMs = 1000;
+    persistConfig();
+
+    if (state.running) {
+      bot.log("equip ring already running");
+      return false;
+    }
+
+    state.running = true;
+    attachResumeListeners();
+    bot.log("equip ring started", { ...config });
+    tick();
+    return true;
+  }
+
+  function stop() {
+    state.running = false;
+
+    if (state.timerId != null) {
+      window.clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+
+    detachResumeListeners();
+
+    config.enabled = false;
+    persistConfig();
+    bot.log("equip ring stopped");
+    return true;
+  }
+
+  function status() {
+    return {
+      running: state.running,
+      config: { ...config },
+      gates: getGateStatus(),
+      equippedRing: getEquippedRing(),
+      lastEquipAt: state.lastEquipAt,
+    };
+  }
+
+  function updateConfig(nextConfig = {}) {
+    Object.assign(config, nextConfig);
+    config.tickMs = 1000;
+    persistConfig();
+    bot.log("equip ring config updated", { ...config });
+    return { ...config };
+  }
+
+  if (config.enabled) {
+    start();
+  }
+
+  bot.equipRing = {
+    start,
+    stop,
+    status,
+    updateConfig,
+    config,
+    getEquippedRing,
+    hasEquippedRing,
+    findBestRingSource,
+    getGateStatus,
+    canEquipRing,
+    tryEquipRing,
+  };
+};
+window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+
 window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(bot) {
   const configStorageKey = "minibiaBot.eat.config";
   const state = {
@@ -2895,6 +3192,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoHealToggle.checked = !!bot.heal?.status?.().running;
   }
 
+  function refreshEquipRingStatus() {
+    const equipRingToggle = document.getElementById("minibia-bot-equip-ring-enabled");
+    if (!equipRingToggle) return;
+
+    equipRingToggle.checked = !!bot.equipRing?.status?.().running;
+  }
+
   function refreshTalkStatus() {
     const talkToggle = document.getElementById("minibia-bot-talk-enabled");
     const statusLabel = document.getElementById("minibia-bot-talk-status");
@@ -3427,9 +3731,16 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 </label>
                 <div></div>
               </div>
+              <div class="mb-row">
+                <label class="mb-toggle">
+                  <input type="checkbox" id="minibia-bot-equip-ring-enabled" />
+                  <span>Equip Ring</span>
+                </label>
+                <div></div>
+              </div>
             </div>
           </div>
-          <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, auto heal, and talk.</div>
+          <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, equip ring, auto heal, and talk.</div>
         </div>
         <div class="mb-side-column">
           <div class="mb-section mb-column-section">
@@ -3505,6 +3816,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const manaInput = panel.querySelector("#minibia-bot-rune-mana");
     const runeEnabledInput = panel.querySelector("#minibia-bot-rune-enabled");
     const autoEatEnabledInput = panel.querySelector("#minibia-bot-auto-eat-enabled");
+    const equipRingEnabledInput = panel.querySelector("#minibia-bot-equip-ring-enabled");
     const autoHealEnabledInput = panel.querySelector("#minibia-bot-auto-heal-enabled");
     const autoHealMinHpInput = panel.querySelector("#minibia-bot-auto-heal-min-hp");
     const autoHealHpHotkeyInput = panel.querySelector("#minibia-bot-auto-heal-hp-hotkey");
@@ -3651,6 +3963,19 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       });
     }
 
+    if (equipRingEnabledInput) {
+      equipRingEnabledInput.checked = !!bot.equipRing?.status?.().running;
+      equipRingEnabledInput.addEventListener("change", () => {
+        if (equipRingEnabledInput.checked) {
+          bot.equipRing.start();
+        } else {
+          bot.equipRing.stop();
+        }
+
+        refreshEquipRingStatus();
+      });
+    }
+
     if (autoHealMinHpInput) {
       autoHealMinHpInput.value = String(bot.heal?.config?.minHp ?? 0);
       autoHealMinHpInput.addEventListener("change", () => {
@@ -3783,6 +4108,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshRuneStatus();
     refreshAutoHealStatus();
     refreshAutoEatStatus();
+    refreshEquipRingStatus();
     refreshTalkStatus();
     refreshVisibleCreatures();
 
@@ -3807,6 +4133,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshRuneStatus,
     refreshAutoHealStatus,
     refreshAutoEatStatus,
+    refreshEquipRingStatus,
     refreshTalkStatus,
     refreshVisibleCreatures,
     getSavedPanelPosition,
@@ -3832,6 +4159,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     currentBundle.installPanicModule(bot);
     currentBundle.installRuneModule(bot);
     currentBundle.installHealModule(bot);
+    currentBundle.installEquipRingModule(bot);
     currentBundle.installAutoEatModule(bot);
     currentBundle.installTalkModule(bot);
     currentBundle.installPanel(bot);
@@ -3850,6 +4178,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       panic: bot.panic.status(),
       rune: bot.rune.status(),
       heal: bot.heal.status(),
+      equipRing: bot.equipRing.status(),
       eat: bot.eat.status(),
       talk: bot.talk.status(),
     });
@@ -3859,7 +4188,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "eat", "talk", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "equipRing", "eat", "talk", "ui"],
     });
     console.log("minibiaBot.reload()");
     console.log("minibiaBot.xray.status()");
@@ -3871,6 +4200,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     console.log("minibiaBot.rune.stop()");
     console.log("minibiaBot.heal.start()");
     console.log("minibiaBot.heal.stop()");
+    console.log("minibiaBot.equipRing.start()");
+    console.log("minibiaBot.equipRing.stop()");
     console.log("minibiaBot.eat.start()");
     console.log("minibiaBot.eat.stop()");
     console.log("minibiaBot.talk.updateConfig({ apiKey: \"...\" })");
