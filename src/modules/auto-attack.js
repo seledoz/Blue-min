@@ -7,6 +7,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     timerId: null,
     lastAttackAt: 0,
     engagedTargetId: null,
+    combatStartedAt: 0,
     lastChaseAt: 0,
     lastChaseDestinationKey: null,
   };
@@ -112,7 +113,40 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
 
   function clearEngagedTarget() {
     state.engagedTargetId = null;
+    state.combatStartedAt = 0;
     state.lastChaseDestinationKey = null;
+  }
+
+  function markCombatActive(now = Date.now()) {
+    if (!state.combatStartedAt) {
+      state.combatStartedAt = now;
+    }
+  }
+
+  function getCombatTargetCount() {
+    return getNearbyMonsters().length;
+  }
+
+  function isCombatActive() {
+    if (!config.enabled || !state.running) {
+      return false;
+    }
+
+    if (getEngagedTarget()) {
+      return true;
+    }
+
+    return getCombatTargetCount() > 0;
+  }
+
+  function syncCombatState(now = Date.now()) {
+    if (isCombatActive()) {
+      markCombatActive(now);
+      return true;
+    }
+
+    state.combatStartedAt = 0;
+    return false;
   }
 
   function getEngagedTarget() {
@@ -250,7 +284,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     }
 
     if (config.meleeMode) {
-      return getNearbyMonsters().length > 0 && !getEngagedTarget();
+      return getNearbyMonsters().length > 0 && !getCurrentTarget();
     }
 
     return getNearbyMonsters().length > 0;
@@ -266,6 +300,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     if (clicked) {
       const monsters = getNearbyMonsters();
       state.lastAttackAt = now;
+      markCombatActive(now);
       bot.log("used auto attack hotkey", {
         slot,
         nearbyMonsters: monsters.map((creature) => creature.name || "Mob"),
@@ -280,17 +315,21 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
       return false;
     }
 
+    const now = Date.now();
+    syncCombatState(now);
+
     if (config.meleeMode) {
-      if (syncMeleeChase(Date.now())) {
-        return true;
+      const chased = syncMeleeChase(now);
+      if (getCurrentTarget()) {
+        return false;
       }
 
-      if (getEngagedTarget()) {
-        return false;
+      if (chased) {
+        return triggerAttack(now) || true;
       }
     }
 
-    return triggerAttack(Date.now());
+    return triggerAttack(now);
   }
 
   function scheduleNextTick() {
@@ -350,11 +389,16 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
   }
 
   function status() {
+    const combatActive = syncCombatState(Date.now());
     return {
       running: state.running,
       config: { ...config },
       lastAttackAt: state.lastAttackAt,
       engagedTargetId: state.engagedTargetId,
+      combatActive,
+      combatStartedAt: state.combatStartedAt || 0,
+      combatDurationMs: state.combatStartedAt ? Math.max(0, Date.now() - state.combatStartedAt) : 0,
+      targetCount: getCombatTargetCount(),
       lastChaseAt: state.lastChaseAt,
       currentTarget: getCurrentTarget()
         ? {
@@ -403,6 +447,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     getNearbyMonsters,
     getCurrentTarget,
     getCurrentFollowTarget,
+    isCombatActive,
     syncMeleeChase,
     normalizeHotbarSlot,
     config,

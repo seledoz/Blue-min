@@ -27,6 +27,7 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     lastStairsUseAt: 0,
     lastObservedPosition: null,
     pendingTransitionSource: null,
+    pausedForCombat: false,
   };
   const minimapOverlayState = {
     timerId: null,
@@ -1113,6 +1114,29 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       const position = normalizePosition(bot.getPlayerPosition());
       const positionKey = getPositionKey(position);
       const now = Date.now();
+      const attackStatus = bot.attack?.status?.() || null;
+      const shouldPauseForCombat =
+        !!attackStatus?.combatActive &&
+        Number(attackStatus?.combatDurationMs || 0) < 60000;
+
+      if (shouldPauseForCombat) {
+        if (!state.pausedForCombat) {
+          state.pausedForCombat = true;
+          bot.log("cave paused for auto attack", {
+            combatDurationMs: Number(attackStatus?.combatDurationMs || 0),
+            targetCount: Number(attackStatus?.targetCount || 0),
+          });
+        }
+        return;
+      }
+
+      if (state.pausedForCombat) {
+        state.pausedForCombat = false;
+        bot.log("cave resumed after auto attack", {
+          combatDurationMs: Number(attackStatus?.combatDurationMs || 0),
+          targetCount: Number(attackStatus?.targetCount || 0),
+        });
+      }
 
       if (positionKey && positionKey !== state.lastPositionKey) {
         state.lastPositionKey = positionKey;
@@ -1201,6 +1225,7 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     state.lastPathAt = 0;
     state.lastPositionKey = getPositionKey(position);
     state.lastProgressAt = Date.now();
+    state.pausedForCombat = false;
     bot.log("cave bot started", {
       waypoints: route.length,
       currentIndex: state.currentIndex + 1,
@@ -1224,6 +1249,7 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       config.enabled = false;
       persistConfig();
     }
+    state.pausedForCombat = false;
     bot.log("cave bot stopped");
     return true;
   }
@@ -1326,6 +1352,7 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       lastPathAt: state.lastPathAt,
       lastProgressAt: state.lastProgressAt,
       pendingTransitionSource: cloneValue(state.pendingTransitionSource),
+      pausedForCombat: state.pausedForCombat,
     };
   }
 
