@@ -4607,13 +4607,13 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   const legacyDefaultModels = ["gemini-3-pro-preview", "gemini-2.0-flash"];
   const defaultModel = "gemini-2.5-flash-lite";
   const defaultSystemPrompt =
-    "You are a normal Minibia player chatting in-game. Reply with one short natural sentence. Vary your wording, tone, and phrasing. Keep it under 90 characters and under 12 words. Plain text only. Never say you are a bot or AI.";
+    "You are a normal Tibia MMORPG player chatting in Minibia in live in-game chat. Every reply must sound like Tibia player chat: casual, brief, informal, lowercase-friendly, and natural for a real player typing quickly. Use plain text only. Keep it under 90 characters and under 12 words. Prefer short Tibia-style phrasing, light slang, abbreviations, and simple punctuation when natural. Do not sound polished, formal, assistant-like, or explanatory. Never say you are a bot or AI.";
   const defaultGreetingPrompt =
-    "Respond to greetings like a normal player. Be short, casual, and friendly. One sentence only. Plain text only.";
+    "Respond to greetings like a Tibia MMORPG player in chat. Be short, casual, friendly, and in-character for fast Tibia-style game chat. One sentence only. Plain text only.";
   const defaultQuestionPrompt =
-    "Respond to questions like a normal player, but stay vague and noncommittal. Do not explain much. One short sentence only. Plain text only. If asked whether you are a bot, reply with no.";
+    "Respond to questions like a Tibia MMORPG player in chat, but stay vague and noncommittal. Keep it brief, casual, and a little evasive. Do not explain much. One short sentence only. Plain text only. If asked whether you are a bot, reply with no.";
   const defaultStatementPrompt =
-    "Respond to statements like a normal player. Keep it short, casual, and natural. One sentence only. Plain text only.";
+    "Respond to statements like a Tibia MMORPG player in chat. Keep it short, casual, reactive, and natural for live Tibia-style game chat. One sentence only. Plain text only.";
   const minPollMs = 1000;
   const maxMessageAgeMs = 2 * 60 * 1000;
   const state = {
@@ -4815,6 +4815,43 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   function isNpcMessage(message) {
     const npcType = window.CONST?.TYPES?.NPC;
     return npcType != null && message?.senderType === npcType;
+  }
+
+  function isWithinVisibleRange(me, pos) {
+    if (!me || !pos) {
+      return false;
+    }
+
+    const dx = Math.abs(pos.x - me.x);
+    const dy = Math.abs(pos.y - me.y);
+    return dx <= 8 && dy <= 6;
+  }
+
+  function isSenderVisiblePlayer(message) {
+    const me = bot.getPlayerPosition?.();
+    const myId = window.gameClient?.player?.id;
+    const senderName = normalizeText(message?.sender);
+    const playerType = window.CONST?.TYPES?.PLAYER;
+
+    if (!me || !senderName || playerType == null) {
+      return false;
+    }
+
+    return Object.values(window.gameClient?.world?.activeCreatures || {}).some((creature) => {
+      if (!creature) {
+        return false;
+      }
+
+      if (creature.id === myId || creature.type !== playerType) {
+        return false;
+      }
+
+      if (normalizeText(creature.name) !== senderName) {
+        return false;
+      }
+
+      return isWithinVisibleRange(me, creature.__position);
+    });
   }
 
   function getDefaultMessages() {
@@ -5071,6 +5108,16 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
 
     try {
       const contextMessages = getDefaultMessages().slice(-6);
+      if (!isSenderVisiblePlayer(pending.targetMessage)) {
+        rememberSeenMessages(pending.pendingMessages);
+        bot.log("talk skipped reply", {
+          sender: pending.targetMessage.sender,
+          message: pending.targetMessage.body,
+          reason: "sender-not-visible",
+        });
+        return false;
+      }
+
       const messageType = await classifyMessageType(pending.targetMessage, contextMessages);
       const rawReply = isBotQuestion(pending.targetMessage.body)
         ? "no"
