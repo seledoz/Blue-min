@@ -890,10 +890,14 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <span>Melee Mode</span>
               </label>
               <label class="mb-field" for="minibia-bot-auto-attack-hotkey">
-                <span class="mb-field-label">Attack Hotkey (1-12)</span>
+                <span class="mb-field-label">Target Hotkey (1-12)</span>
                 <input type="number" id="minibia-bot-auto-attack-hotkey" min="1" max="12" placeholder="3" />
               </label>
-              <div class="mb-small-note">Melee mode acquires a target once, then walks adjacent to that target until it dies or disappears. Non-melee mode keeps re-pressing while monsters are nearby.</div>
+              <label class="mb-field" for="minibia-bot-auto-attack-rune-hotkey">
+                <span class="mb-field-label">Rune Hotkey (1-12)</span>
+                <input type="number" id="minibia-bot-auto-attack-rune-hotkey" min="1" max="12" placeholder="4" />
+              </label>
+              <div class="mb-small-note">Melee mode uses the target hotkey, then walks adjacent to the target. Non-melee mode uses the target hotkey to acquire a target and the rune hotkey to cast on that target.</div>
             </div>
           </div>
         </div>
@@ -930,6 +934,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const autoAttackEnabledInput = panel.querySelector("#minibia-bot-auto-attack-enabled");
     const autoAttackMeleeInput = panel.querySelector("#minibia-bot-auto-attack-melee");
     const autoAttackHotkeyInput = panel.querySelector("#minibia-bot-auto-attack-hotkey");
+    const autoAttackRuneHotkeyInput = panel.querySelector("#minibia-bot-auto-attack-rune-hotkey");
     const talkEnabledInput = panel.querySelector("#minibia-bot-talk-enabled");
     const talkApiKeyInput = panel.querySelector("#minibia-bot-talk-api-key");
     const talkPromptInput = panel.querySelector("#minibia-bot-talk-prompt");
@@ -1194,11 +1199,25 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     }
 
     if (autoAttackHotkeyInput) {
-      autoAttackHotkeyInput.value = String(bot.attack?.config?.hotbarSlot ?? 3);
+      autoAttackHotkeyInput.value = String(bot.attack?.config?.targetHotbarSlot ?? 3);
       autoAttackHotkeyInput.addEventListener("change", () => {
-        const hotbarSlot = Math.min(12, Math.max(1, Number(autoAttackHotkeyInput.value) || 1));
-        autoAttackHotkeyInput.value = String(hotbarSlot);
-        bot.attack.updateConfig({ hotbarSlot });
+        const targetHotbarSlot = Math.min(12, Math.max(1, Number(autoAttackHotkeyInput.value) || 1));
+        autoAttackHotkeyInput.value = String(targetHotbarSlot);
+        bot.attack.updateConfig({ targetHotbarSlot });
+      });
+    }
+
+    if (autoAttackRuneHotkeyInput) {
+      autoAttackRuneHotkeyInput.value = bot.attack?.config?.runeHotbarSlot
+        ? String(bot.attack.config.runeHotbarSlot)
+        : "";
+      autoAttackRuneHotkeyInput.addEventListener("change", () => {
+        const rawValue = Number(autoAttackRuneHotkeyInput.value);
+        const runeHotbarSlot = Number.isFinite(rawValue) && rawValue >= 1 && rawValue <= 12
+          ? Math.trunc(rawValue)
+          : null;
+        autoAttackRuneHotkeyInput.value = runeHotbarSlot ? String(runeHotbarSlot) : "";
+        bot.attack.updateConfig({ runeHotbarSlot });
       });
     }
 
@@ -1212,14 +1231,22 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (autoAttackEnabledInput) {
       autoAttackEnabledInput.checked = !!bot.attack?.status?.().running;
       autoAttackEnabledInput.addEventListener("change", () => {
-        const hotbarSlot = Math.min(
+        const targetHotbarSlot = Math.min(
           12,
-          Math.max(1, Number(autoAttackHotkeyInput?.value) || bot.attack.config.hotbarSlot || 1)
+          Math.max(1, Number(autoAttackHotkeyInput?.value) || bot.attack.config.targetHotbarSlot || 1)
         );
+        const runeHotbarSlot = (() => {
+          const rawValue = Number(autoAttackRuneHotkeyInput?.value);
+          if (Number.isFinite(rawValue) && rawValue >= 1 && rawValue <= 12) {
+            return Math.trunc(rawValue);
+          }
+
+          return bot.attack.config.runeHotbarSlot ?? null;
+        })();
         const meleeMode = !!autoAttackMeleeInput?.checked;
 
         if (autoAttackEnabledInput.checked) {
-          bot.attack.start({ hotbarSlot, meleeMode });
+          bot.attack.start({ targetHotbarSlot, runeHotbarSlot, meleeMode });
         } else {
           bot.attack.stop();
         }

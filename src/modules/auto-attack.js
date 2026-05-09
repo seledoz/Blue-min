@@ -5,23 +5,30 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
   const state = {
     running: false,
     timerId: null,
-    lastAttackAt: 0,
+    lastTargetHotkeyAt: 0,
+    lastRuneHotkeyAt: 0,
     engagedTargetId: null,
     combatStartedAt: 0,
     lastChaseAt: 0,
     lastChaseDestinationKey: null,
   };
 
+  const storedConfig = bot.storage.get(configStorageKey, {}) || {};
   const config = Object.assign(
     {
       tickMs: 500,
-      attackCooldownMs: 1200,
-      hotbarSlot: 3,
+      targetHotbarSlot: 3,
+      runeHotbarSlot: null,
+      targetCooldownMs: 1200,
+      runeCooldownMs: 1200,
       meleeMode: true,
       enabled: false,
     },
-    bot.storage.get(configStorageKey, {})
+    storedConfig
   );
+  if (config.targetHotbarSlot == null && storedConfig.hotbarSlot != null) {
+    config.targetHotbarSlot = storedConfig.hotbarSlot;
+  }
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -124,7 +131,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
   }
 
   function getCombatTargetCount() {
-    return getNearbyMonsters().length;
+    return getEngagedTarget() ? 1 : 0;
   }
 
   function isCombatActive() {
@@ -132,11 +139,7 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
       return false;
     }
 
-    if (getEngagedTarget()) {
-      return true;
-    }
-
-    return getCombatTargetCount() > 0;
+    return !!getEngagedTarget();
   }
 
   function syncCombatState(now = Date.now()) {
@@ -274,12 +277,12 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
   }
 
   function canAttack(now = Date.now()) {
-    const slot = normalizeHotbarSlot(config.hotbarSlot);
+    const slot = normalizeHotbarSlot(config.targetHotbarSlot);
     if (!slot) {
       return false;
     }
 
-    if (now - state.lastAttackAt < Math.max(0, Number(config.attackCooldownMs) || 0)) {
+    if (now - state.lastTargetHotkeyAt < Math.max(0, Number(config.targetCooldownMs) || 0)) {
       return false;
     }
 
@@ -295,15 +298,47 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
       return false;
     }
 
-    const slot = normalizeHotbarSlot(config.hotbarSlot);
+    const slot = normalizeHotbarSlot(config.targetHotbarSlot);
     const clicked = bot.clickHotbar(slot - 1);
     if (clicked) {
       const monsters = getNearbyMonsters();
-      state.lastAttackAt = now;
+      state.lastTargetHotkeyAt = now;
       markCombatActive(now);
-      bot.log("used auto attack hotkey", {
+      bot.log("used auto attack target hotkey", {
         slot,
         nearbyMonsters: monsters.map((creature) => creature.name || "Mob"),
+      });
+    }
+
+    return clicked;
+  }
+
+  function canUseRune(now = Date.now()) {
+    const slot = normalizeHotbarSlot(config.runeHotbarSlot);
+    if (!slot || !getCurrentTarget()) {
+      return false;
+    }
+
+    if (now - state.lastRuneHotkeyAt < Math.max(0, Number(config.runeCooldownMs) || 0)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function triggerRune(now = Date.now()) {
+    if (!canUseRune(now)) {
+      return false;
+    }
+
+    const slot = normalizeHotbarSlot(config.runeHotbarSlot);
+    const clicked = bot.clickHotbar(slot - 1);
+    if (clicked) {
+      state.lastRuneHotkeyAt = now;
+      markCombatActive(now);
+      bot.log("used auto attack rune hotkey", {
+        slot,
+        target: getCurrentTarget()?.name || "Mob",
       });
     }
 
@@ -327,6 +362,10 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
       if (chased) {
         return triggerAttack(now) || true;
       }
+    }
+
+    if (getCurrentTarget()) {
+      return triggerRune(now);
     }
 
     return triggerAttack(now);
@@ -393,7 +432,8 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     return {
       running: state.running,
       config: { ...config },
-      lastAttackAt: state.lastAttackAt,
+      lastTargetHotkeyAt: state.lastTargetHotkeyAt,
+      lastRuneHotkeyAt: state.lastRuneHotkeyAt,
       engagedTargetId: state.engagedTargetId,
       combatActive,
       combatStartedAt: state.combatStartedAt || 0,
@@ -418,8 +458,12 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
   }
 
   function updateConfig(nextConfig = {}) {
-    if (Object.prototype.hasOwnProperty.call(nextConfig, "hotbarSlot")) {
-      nextConfig.hotbarSlot = normalizeHotbarSlot(nextConfig.hotbarSlot) ?? config.hotbarSlot;
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "targetHotbarSlot")) {
+      nextConfig.targetHotbarSlot = normalizeHotbarSlot(nextConfig.targetHotbarSlot) ?? config.targetHotbarSlot;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "runeHotbarSlot")) {
+      nextConfig.runeHotbarSlot = normalizeHotbarSlot(nextConfig.runeHotbarSlot);
     }
 
     Object.assign(config, nextConfig);
@@ -444,6 +488,8 @@ window.__minibiaBotBundle.installAutoAttackModule = function installAutoAttackMo
     tryAttack,
     canAttack,
     triggerAttack,
+    canUseRune,
+    triggerRune,
     getNearbyMonsters,
     getCurrentTarget,
     getCurrentFollowTarget,
