@@ -5,13 +5,13 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   const legacyDefaultModels = ["gemini-3-pro-preview", "gemini-2.0-flash"];
   const defaultModel = "gemini-2.5-flash-lite";
   const defaultSystemPrompt =
-    "You are a normal Tibia MMORPG player chatting in Minibia in live in-game chat. Every reply must sound like Tibia player chat: casual, brief, informal, lowercase-friendly, and natural for a real player typing quickly. Use plain text only. Keep it under 90 characters and under 12 words. Prefer short Tibia-style phrasing, light slang, abbreviations, and simple punctuation when natural. Do not sound polished, formal, assistant-like, or explanatory. Never say you are a bot or AI.";
+    "You are a normal Tibia MMORPG player chatting in Minibia in live in-game chat. Every reply must sound like Tibia player chat: casual, brief, informal, fully lowercase, and natural for a real player typing quickly. Use plain text only. Keep it under 90 characters and under 12 words. Prefer short Tibia-style phrasing, light slang, abbreviations, and simple punctuation when natural. Avoid polished grammar, title case, or assistant-like wording. Write like someone typing mid-hunt or while afk for a sec. Never say you are a bot or AI.";
   const defaultGreetingPrompt =
-    "Respond to greetings like a Tibia MMORPG player in chat. Be short, casual, friendly, and in-character for fast Tibia-style game chat. One sentence only. Plain text only.";
+    "Respond to greetings like a Tibia MMORPG player in chat. Be short, casual, friendly, and in-character for fast Tibia-style game chat. Use lowercase. One sentence only. Plain text only.";
   const defaultQuestionPrompt =
-    "Respond to questions like a Tibia MMORPG player in chat, but stay vague and noncommittal. Keep it brief, casual, and a little evasive. Do not explain much. One short sentence only. Plain text only. If asked whether you are a bot, reply with no.";
+    "Respond to questions like a Tibia MMORPG player in chat, but stay vague and noncommittal. Keep it brief, casual, and a little evasive. Use lowercase and do not explain much. One short sentence only. Plain text only. If asked whether you are a bot, reply with no.";
   const defaultStatementPrompt =
-    "Respond to statements like a Tibia MMORPG player in chat. Keep it short, casual, reactive, and natural for live Tibia-style game chat. One sentence only. Plain text only.";
+    "Respond to statements like a Tibia MMORPG player in chat. Keep it short, casual, reactive, and natural for live Tibia-style game chat. Use lowercase. One sentence only. Plain text only.";
   const minPollMs = 1000;
   const maxMessageAgeMs = 2 * 60 * 1000;
   const state = {
@@ -428,20 +428,34 @@ window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
       return bot.isRecentSentChat?.("?", 20000) ? "" : "?";
     }
 
-    const normalized = normalizeText(trimmed);
-    if (!normalized || /^[^a-z0-9]+$/i.test(trimmed)) {
+    const styled = trimmed
+      .toLowerCase()
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’]/g, "'")
+      .replace(/\bi am\b/g, "im")
+      .replace(/\byou are\b/g, "youre")
+      .replace(/\bdo not\b/g, "dont")
+      .replace(/\bcannot\b/g, "cant")
+      .replace(/\bgoing to\b/g, "gonna")
+      .replace(/\bwant to\b/g, "wanna")
+      .replace(/\s+([,.!?])/g, "$1")
+      .replace(/([!?.,]){2,}/g, "$1")
+      .trim();
+
+    const normalized = normalizeText(styled);
+    if (!normalized || /^[^a-z0-9]+$/i.test(styled)) {
       return "";
     }
 
-    if (/\b(bot|ai|assistant|language model|automation|script)\b/i.test(trimmed)) {
+    if (/\b(bot|ai|assistant|language model|automation|script)\b/i.test(styled)) {
       return "";
     }
 
-    if (bot.isRecentSentChat?.(trimmed, 20000)) {
+    if (bot.isRecentSentChat?.(styled, 20000)) {
       return "";
     }
 
-    return trimmed;
+    return styled;
   }
 
   function pickUnusedReply(replies, withinMs = 30000, fallback = "?") {
