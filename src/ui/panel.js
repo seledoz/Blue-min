@@ -244,6 +244,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const status = bot.cave?.status?.();
 
     if (statusLabel) {
+      const modeLabel = status?.config?.cycleWaypoints ? "cycle" : "bounce";
       if (!route.length) {
         statusLabel.textContent = "Status: no waypoints";
       } else if (status?.running) {
@@ -252,9 +253,9 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
           Number.isFinite(status?.distanceToWaypoint) && status.distanceToWaypoint >= 0
             ? `, dist ${status.distanceToWaypoint}`
             : "";
-        statusLabel.textContent = `Status: running (${waypointNumber}/${route.length}${distanceLabel})`;
+        statusLabel.textContent = `Status: running (${waypointNumber}/${route.length}${distanceLabel}, ${modeLabel})`;
       } else {
-        statusLabel.textContent = `Status: idle (${route.length} waypoint${route.length === 1 ? "" : "s"})`;
+        statusLabel.textContent = `Status: idle (${route.length} waypoint${route.length === 1 ? "" : "s"}, ${modeLabel})`;
       }
     }
 
@@ -265,6 +266,17 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     if (stopButton) {
       stopButton.disabled = !status?.running;
     }
+  }
+
+  function refreshCaveModeStatus() {
+    const caveCycleToggle = document.getElementById("minibia-bot-cave-cycle");
+    const status = bot.cave?.status?.();
+
+    if (!caveCycleToggle) {
+      return;
+    }
+
+    caveCycleToggle.checked = !!status?.config?.cycleWaypoints;
   }
 
   function refreshCavePresetControls() {
@@ -1047,6 +1059,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-record">Record Spot</button>
                 <button type="button" class="mb-small-button" id="minibia-bot-cave-remove-last">Remove Last</button>
               </div>
+              <label class="mb-toggle">
+                <input type="checkbox" id="minibia-bot-cave-cycle" />
+                <span>Cycle route (loop)</span>
+              </label>
               <div class="mb-small-note" id="minibia-bot-cave-closest">Closest start: no waypoints</div>
               <div class="mb-small-note" id="minibia-bot-cave-transition-status">Transitions learned: none</div>
               <div class="mb-actions mb-actions-inline-two">
@@ -1134,6 +1150,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const caveRemoveLastButton = panel.querySelector("#minibia-bot-cave-remove-last");
     const caveStartButton = panel.querySelector("#minibia-bot-cave-start");
     const caveStopButton = panel.querySelector("#minibia-bot-cave-stop");
+    const caveCycleToggle = panel.querySelector("#minibia-bot-cave-cycle");
     const cavePresetSelect = panel.querySelector("#minibia-bot-cave-preset-select");
     const cavePresetNewButton = panel.querySelector("#minibia-bot-cave-preset-new");
     const cavePresetDeleteButton = panel.querySelector("#minibia-bot-cave-preset-delete");
@@ -1355,6 +1372,14 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         refreshCaveStatus();
         refreshCaveClosestStatus();
         refreshCaveTransitionStatus();
+      });
+    }
+
+    if (caveCycleToggle) {
+      caveCycleToggle.checked = !!bot.cave?.status?.()?.config?.cycleWaypoints;
+      caveCycleToggle.addEventListener("change", () => {
+        bot.cave.updateConfig({ cycleWaypoints: caveCycleToggle.checked });
+        refreshCaveModeStatus();
       });
     }
 
@@ -1623,6 +1648,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoAttackStatus();
     refreshAutoEatStatus();
     refreshCaveStatus();
+    refreshCaveModeStatus();
     refreshEquipRingStatus();
     refreshTalkStatus();
     refreshVisibleCreatures();
@@ -1642,6 +1668,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     const caveStatusTimerId = window.setInterval(() => {
       refreshCaveStatus();
+      refreshCaveModeStatus();
       refreshCavePresetControls();
       refreshCaveClosestStatus();
       refreshCaveTransitionStatus();
@@ -1665,6 +1692,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoAttackStatus,
     refreshAutoEatStatus,
     refreshCaveStatus,
+    refreshCaveModeStatus,
     refreshCavePresetControls,
     refreshEquipRingStatus,
     refreshTalkStatus,

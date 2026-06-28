@@ -30,6 +30,9 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     lastObservedPosition: null,
     pendingTransitionSource: null,
     pausedForCombat: false,
+    lastUsedTransition: null,
+    lastFloorChange: null,
+    blockedTransitions: {},
   };
   const minimapOverlayState = {
     timerId: null,
@@ -40,12 +43,14 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       tickMs: 500,
       repathMs: 1500,
       waypointTolerance: 0,
+      cycleWaypoints: false,
       enabled: false,
       activePresetName: defaultPresetName,
     },
     bot.storage.get(configStorageKey, {})
   );
   config.tickMs = 500;
+  config.cycleWaypoints = !!config.cycleWaypoints;
 
   function normalizePresetName(value) {
     const normalized = String(value || "").trim().replace(/\s+/g, " ");
@@ -405,6 +410,49 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
 
   function getPositionKey(position) {
     return position ? `${position.x},${position.y},${position.z}` : null;
+  }
+
+  function getBlockedTransitionKey(source, targetZ) {
+    const sourceKey = getPositionKey(normalizePosition(source));
+    const normalizedTargetZ = Math.trunc(Number(targetZ));
+    if (!sourceKey || !Number.isFinite(normalizedTargetZ)) {
+      return null;
+    }
+
+    return `${sourceKey}->${normalizedTargetZ}`;
+  }
+
+  function isTransitionBlocked(source, targetZ, now = Date.now()) {
+    const key = getBlockedTransitionKey(source, targetZ);
+    if (!key) {
+      return false;
+    }
+
+    const blockedUntil = Number(state.blockedTransitions[key] || 0);
+    if (!blockedUntil || blockedUntil <= now) {
+      if (state.blockedTransitions[key]) {
+        delete state.blockedTransitions[key];
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  function blockTransition(source, targetZ, durationMs, reason, now = Date.now()) {
+    const key = getBlockedTransitionKey(source, targetZ);
+    if (!key) {
+      return;
+    }
+
+    const until = now + Math.max(1000, Math.trunc(Number(durationMs) || 0));
+    state.blockedTransitions[key] = until;
+    bot.log("cave temporarily blocked transition source", {
+      source: normalizePosition(source),
+      targetZ,
+      blockedForMs: until - now,
+      reason,
+    });
   }
 
   function getDistance(from, to) {
@@ -901,7 +949,7 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return best;
   }
 
-  function findBestKnownTransition(position, waypoint) {
+  function findBestKnownTransition(position, waypoint, now = Date.now()) {
     if (!position || !waypoint) {
       return null;
     }
@@ -911,6 +959,10 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
 
     transitions.forEach((transition) => {
       if (transition.from.z !== position.z || transition.to.z !== waypoint.z) {
+        return;
+      }
+
+      if (isTransitionBlocked(transition.from, waypoint.z, now)) {
         return;
       }
 
@@ -930,7 +982,7 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     return best;
   }
 
-  function findNearbyTransitionTile(position, waypoint) {
+  function findNearbyTransitionTile(position, waypoint, now = Date.now()) {
     if (!position || !waypoint) {
       return null;
     }
@@ -941,6 +993,10 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     let bestScore = Number.POSITIVE_INFINITY;
 
     getNearbyTransitionTiles(position, waypoint, radius).forEach((entry) => {
+      if (isTransitionBlocked(entry.position, waypoint.z, now)) {
+        return;
+      }
+
       const playerDistance = getDistance(position, entry.position);
       const tileToWaypointDistance =
         Math.abs(entry.position.x - waypoint.x) + Math.abs(entry.position.y - waypoint.y);
@@ -1069,10 +1125,46 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
 
     const previous = state.lastObservedPosition;
     if (previous && !isSameTile(previous, current) && previous.z !== current.z) {
+      const now = Date.now();
       const source = resolveObservedTransitionSource(previous);
       if (source) {
         upsertTransition(source, current);
       }
+
+      const lastUsedTransition = state.lastUsedTransition;
+      if (lastUsedTransition && now - Number(lastUsedTransition.at || 0) <= 6000) {
+        const expectedTargetZ = Number(lastUsedTransition.intendedTargetZ);
+        const fromZ = Number(lastUsedTransition.fromZ);
+        if (Number.isFinite(expectedTargetZ) && Number.isFinite(fromZ)) {
+          const previousDistance = Math.abs(expectedTargetZ - fromZ);
+          const currentDistance = Math.abs(expectedTargetZ - current.z);
+          if (currentDistance >= previousDistance) {
+            blockTransition(
+              lastUsedTransition.source,
+              expectedTargetZ,
+              8000,
+              "floor change moved away from target",
+              now
+            );
+          }
+        }
+      }
+
+      const recentChange = state.lastFloorChange;
+      if (
+        recentChange &&
+        now - Number(recentChange.at || 0) <= 5000 &&
+        Number(recentChange.fromZ) === Number(current.z) &&
+        Number(recentChange.toZ) === Number(previous.z)
+      ) {
+        blockTransition(source || previous, current.z, 10000, "detected immediate floor bounce", now);
+      }
+
+      state.lastFloorChange = {
+        fromZ: previous.z,
+        toZ: current.z,
+        at: now,
+      };
       state.pendingTransitionSource = null;
     }
 
@@ -1244,6 +1336,12 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       state.lastStairsUseAt = now;
       state.lastPathAt = now;
       markPendingTransitionSource(targetPosition);
+      state.lastUsedTransition = {
+        source: targetPosition,
+        fromZ: position.z,
+        intendedTargetZ: waypoint?.z ?? null,
+        at: now,
+      };
       bot.log("cave used ladder tile", {
         source: targetPosition,
         targetZ: waypoint?.z ?? null,
@@ -1264,6 +1362,12 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     state.lastStairsUseAt = now;
     state.lastPathAt = now;
     markPendingTransitionSource(position);
+    state.lastUsedTransition = {
+      source: position,
+      fromZ: position.z,
+      intendedTargetZ: waypoint?.z ?? null,
+      at: now,
+    };
     bot.log("cave used floor-change tile", {
       source: position,
       targetZ: waypoint?.z ?? null,
@@ -1277,21 +1381,7 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       return false;
     }
 
-    const visibleCandidate = findNearbyTransitionTile(position, waypoint);
-    if (visibleCandidate) {
-      const moved = useFloorChangeTile(visibleCandidate, waypoint, now);
-      if (moved) {
-        bot.log("cave probing visible floor-change tile", {
-          tileX: visibleCandidate.position.x,
-          tileY: visibleCandidate.position.y,
-          tileZ: visibleCandidate.position.z,
-          targetZ: waypoint.z,
-        });
-        return true;
-      }
-    }
-
-    const knownTransition = findBestKnownTransition(position, waypoint);
+    const knownTransition = findBestKnownTransition(position, waypoint, now);
     if (knownTransition) {
       const target = {
         tile: getTileAt(knownTransition.from),
@@ -1313,6 +1403,20 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
         waypoint,
       });
     }
+
+    const visibleCandidate = findNearbyTransitionTile(position, waypoint, now);
+    if (visibleCandidate) {
+      const moved = useFloorChangeTile(visibleCandidate, waypoint, now);
+      if (moved) {
+        bot.log("cave probing visible floor-change tile", {
+          tileX: visibleCandidate.position.x,
+          tileY: visibleCandidate.position.y,
+          tileZ: visibleCandidate.position.z,
+          targetZ: waypoint.z,
+        });
+        return true;
+      }
+    }
     return false;
   }
 
@@ -1323,6 +1427,21 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
 
     if (route.length === 1) {
       return route[0];
+    }
+
+    if (config.cycleWaypoints) {
+      state.currentIndex = (state.currentIndex + 1) % route.length;
+      state.direction = 1;
+
+      const nextWaypoint = getCurrentWaypoint();
+      bot.log("cave advanced waypoint", {
+        index: state.currentIndex + 1,
+        total: route.length,
+        direction: state.direction,
+        mode: "cycle",
+        waypoint: nextWaypoint,
+      });
+      return nextWaypoint;
     }
 
     let nextIndex = state.currentIndex + state.direction;
@@ -1342,6 +1461,7 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
       index: state.currentIndex + 1,
       total: route.length,
       direction: state.direction,
+      mode: "bounce",
       waypoint: nextWaypoint,
     });
     return nextWaypoint;
@@ -1473,7 +1593,9 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
     const position = normalizePosition(bot.getPlayerPosition());
     state.running = true;
     state.currentIndex = findClosestWaypointIndex(position);
-    state.direction = state.currentIndex >= route.length - 1 ? -1 : 1;
+    state.direction = config.cycleWaypoints
+      ? 1
+      : (state.currentIndex >= route.length - 1 ? -1 : 1);
     if (route.length <= 1) {
       state.direction = 1;
     }
@@ -1584,7 +1706,9 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
 
     const nextIndex = Math.max(0, Math.min(route.length - 1, Math.trunc(Number(index) || 0)));
     state.currentIndex = nextIndex;
-    state.direction = nextIndex >= route.length - 1 ? -1 : 1;
+    state.direction = config.cycleWaypoints
+      ? 1
+      : (nextIndex >= route.length - 1 ? -1 : 1);
     if (route.length <= 1) {
       state.direction = 1;
     }
@@ -1616,6 +1740,12 @@ window.__minibiaBotBundle.installCaveModule = function installCaveModule(bot) {
   function updateConfig(nextConfig = {}) {
     Object.assign(config, nextConfig);
     config.tickMs = 500;
+    config.cycleWaypoints = !!config.cycleWaypoints;
+
+    if (config.cycleWaypoints && route.length > 1) {
+      state.direction = 1;
+    }
+
     persistConfig();
     bot.log("cave config updated", { ...config });
     return { ...config };
