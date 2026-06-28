@@ -7073,11 +7073,11 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         z-index: 999999;
         max-width: calc(100vw - 32px);
         padding: 12px;
-        border: 1px solid rgba(224, 200, 148, 0.45);
+        border: 1px solid rgba(112, 168, 170, 0.42);
         border-radius: 10px;
-        background: linear-gradient(180deg, rgba(30, 23, 15, 0.95), rgba(15, 11, 8, 0.97));
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-        color: #f1e2b8;
+        background: linear-gradient(180deg, rgba(15, 22, 24, 0.96), rgba(8, 12, 14, 0.98));
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        color: #c6dfdd;
         font: 12px/1.35 Verdana, sans-serif;
         user-select: none;
       }
@@ -7141,7 +7141,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
       #minibia-bot-panel .mb-section {
         padding-top: 10px;
-        border-top: 1px solid rgba(224, 200, 148, 0.16);
+        border-top: 1px solid rgba(112, 168, 170, 0.2);
       }
 
       #minibia-bot-panel .mb-column-section:first-child {
@@ -7151,7 +7151,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
       #minibia-bot-panel .mb-label {
         margin: 0 0 8px;
-        color: #d3c49d;
+        color: #a9c5c3;
         word-break: break-word;
       }
 
@@ -7171,16 +7171,16 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       #minibia-bot-panel button {
         width: 100%;
         padding: 8px 10px;
-        border: 1px solid rgba(224, 200, 148, 0.35);
+        border: 1px solid rgba(112, 168, 170, 0.36);
         border-radius: 8px;
-        background: linear-gradient(180deg, #635133, #3f321f);
-        color: #f7eccf;
+        background: linear-gradient(180deg, #30474a, #1f2f32);
+        color: #d3ebe8;
         font: inherit;
         cursor: pointer;
       }
 
       #minibia-bot-panel button:hover {
-        background: linear-gradient(180deg, #755f3d, #4f4028);
+        background: linear-gradient(180deg, #3a5659, #24393c);
       }
 
       #minibia-bot-panel input,
@@ -7188,10 +7188,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         width: 100%;
         box-sizing: border-box;
         padding: 8px 10px;
-        border: 1px solid rgba(224, 200, 148, 0.35);
+        border: 1px solid rgba(112, 168, 170, 0.34);
         border-radius: 8px;
-        background: rgba(16, 12, 8, 0.88);
-        color: #f7eccf;
+        background: rgba(8, 14, 16, 0.9);
+        color: #d3ebe8;
         font: inherit;
       }
 
@@ -7204,7 +7204,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         display: flex;
         align-items: center;
         gap: 8px;
-        color: #d3c49d;
+        color: #a9c5c3;
       }
 
       #minibia-bot-panel .mb-toggle input[type="checkbox"] {
@@ -7272,7 +7272,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       }
 
       #minibia-bot-panel .mb-field-label {
-        color: #d3c49d;
+        color: #a9c5c3;
         font-size: 11px;
       }
 
@@ -7298,24 +7298,24 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         grid-template-columns: minmax(0, 1fr) auto;
         gap: 6px;
         align-items: center;
-        color: #d3c49d;
+        color: #a9c5c3;
       }
 
       #minibia-bot-panel .mb-creature-row {
         padding: 6px 8px;
-        border: 1px solid rgba(224, 200, 148, 0.14);
+        border: 1px solid rgba(112, 168, 170, 0.18);
         border-radius: 8px;
-        background: rgba(255, 244, 212, 0.04);
+        background: rgba(162, 218, 220, 0.04);
       }
 
       #minibia-bot-panel .mb-creature-name {
-        color: #f7eccf;
+        color: #d3ebe8;
         word-break: break-word;
       }
 
       #minibia-bot-panel .mb-floor-label {
         margin-top: 4px;
-        color: #e2cf9c;
+        color: #9ec6c3;
         font-size: 11px;
         font-weight: 700;
         letter-spacing: 0.04em;
@@ -7341,14 +7341,37 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       }
 
       #minibia-bot-panel .mb-small-note {
-        color: #b7a67d;
+        color: #88a7a5;
         font-size: 11px;
       }
 
       #minibia-bot-panel .mb-note {
         margin-top: 8px;
-        color: #b7a67d;
+        color: #88a7a5;
         font-size: 11px;
+      }
+
+      #minibia-bot-panel .mb-footer {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(112, 168, 170, 0.2);
+        text-align: right;
+        font-size: 10px;
+        color: #88a7a5;
+      }
+
+      #minibia-bot-panel .mb-footer a {
+        color: #9ccfcd;
+        text-decoration: none;
+      }
+
+      #minibia-bot-panel .mb-footer a:hover {
+        color: #bde7e4;
+        text-decoration: underline;
+      }
+
+      #minibia-bot-panel[data-collapsed="true"] .mb-footer {
+        display: none;
       }
 
       @media (max-width: 760px) {
@@ -7371,7 +7394,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     panel.id = "minibia-bot-panel";
     panel.innerHTML = `
         <div class="mb-titlebar">
-        <div class="mb-title">Minibia Bot</div>
+        <div class="mb-title">[fork] Minibia Bot</div>
         <button type="button" class="mb-icon-button" id="minibia-bot-collapse" aria-label="Minimize panel" title="Minimize">−</button>
       </div>
       <div class="mb-body">
@@ -7568,6 +7591,10 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
             </div>
           </div>
         </div>
+      </div>
+      <div class="mb-footer">
+        source:
+        <a href="https://github.com/pasqualguerrero/minibia-bot" target="_blank" rel="noopener noreferrer">github.com/pasqualguerrero/minibia-bot</a>
       </div>
     `;
     document.body.appendChild(panel);
