@@ -301,6 +301,10 @@ window.__minibiaBotBundle.createBot = function createBot() {
         this.eat.stop({ persistEnabled: false });
       }
 
+      if (this.fishing?.stop) {
+        this.fishing.stop({ persistEnabled: false });
+      }
+
       if (this.talk?.stop) {
         this.talk.stop({ persistEnabled: false });
       }

@@ -14,6 +14,7 @@ cat \
   src/modules/cave.js \
   src/modules/equip-ring.js \
   src/modules/auto-eat.js \
+  src/modules/auto-fishing.js \
   src/modules/talk.js \
   src/ui/panel.js \
   src/main.js \

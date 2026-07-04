@@ -13,6 +13,7 @@
     ["minibiaBot.cave.presets", "k9x.cave.presets"],
     ["minibiaBot.equipRing.config", "k9x.equipRing.config"],
     ["minibiaBot.eat.config", "k9x.eat.config"],
+    ["minibiaBot.fishing.config", "k9x.fishing.config"],
     ["minibiaBot.talk.config", "k9x.talk.config"],
     ["minibiaBot.panic.config", "k9x.panic.config"],
     ["minibiaBot.pz.home", "k9x.pz.home"],
@@ -31,6 +32,7 @@
     ["gameHelper.cave.presets", "k9x.cave.presets"],
     ["gameHelper.equipRing.config", "k9x.equipRing.config"],
     ["gameHelper.eat.config", "k9x.eat.config"],
+    ["gameHelper.fishing.config", "k9x.fishing.config"],
     ["gameHelper.talk.config", "k9x.talk.config"],
     ["gameHelper.panic.config", "k9x.panic.config"],
     ["gameHelper.pz.home", "k9x.pz.home"],
@@ -47,6 +49,7 @@
     ["cave", "k9x.cave.config"],
     ["equipRing", "k9x.equipRing.config"],
     ["eat", "k9x.eat.config"],
+    ["fishing", "k9x.fishing.config"],
     ["talk", "k9x.talk.config"],
   ];
 
@@ -135,6 +138,7 @@
     currentBundle.installCaveModule(bot);
     currentBundle.installEquipRingModule(bot);
     currentBundle.installAutoEatModule(bot);
+    currentBundle.installAutoFishingModule(bot);
     currentBundle.installTalkModule(bot);
     currentBundle.installPanel(bot);
 
@@ -158,6 +162,7 @@
       cave: bot.cave.status(),
       equipRing: bot.equipRing.status(),
       eat: bot.eat.status(),
+      fishing: bot.fishing.status(),
       talk: bot.talk.status(),
     });
 
@@ -166,7 +171,7 @@
 
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "eat", "talk", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "eat", "fishing", "talk", "ui"],
     });
     console.log("minibiaBot.reload()");
     console.log("minibiaBot.xray.status()");
@@ -191,6 +196,8 @@
     console.log("minibiaBot.equipRing.stop()");
     console.log("minibiaBot.eat.start()");
     console.log("minibiaBot.eat.stop()");
+    console.log("minibiaBot.fishing.start()");
+    console.log("minibiaBot.fishing.stop()");
     console.log("minibiaBot.talk.updateConfig({ apiKey: \"...\" })");
     console.log("minibiaBot.talk.start()");
     console.log("minibiaBot.talk.stop()");

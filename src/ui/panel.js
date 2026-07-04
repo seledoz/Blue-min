@@ -208,6 +208,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoEatToggle.checked = !!bot.eat?.status?.().running;
   }
 
+  function refreshAutoFishingStatus() {
+    const autoFishingToggle = document.getElementById("k9x-auto-fishing-enabled");
+    if (!autoFishingToggle) return;
+
+    autoFishingToggle.checked = !!bot.fishing?.status?.().running;
+  }
+
   function refreshAutoHealStatus() {
     const autoHealToggle = document.getElementById("k9x-auto-heal-enabled");
     if (!autoHealToggle) return;
@@ -1041,6 +1048,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
               </div>
               <div class="mb-row">
                 <label class="mb-toggle">
+                  <input type="checkbox" id="k9x-auto-fishing-enabled" />
+                  <span>Auto Fishing</span>
+                </label>
+                <div class="mb-small-note">On enable it asks for the rod hotkey slot, then uses it and left-clicks fast (about every 200ms). Right-click disables it.</div>
+              </div>
+              <div class="mb-row">
+                <label class="mb-toggle">
                   <input type="checkbox" id="k9x-auto-invisible-enabled" />
                   <span>Auto Invisible</span>
                 </label>
@@ -1063,7 +1077,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
             </div>
           </div>
           <div class="mb-section mb-column-section">
-            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, auto invisible, auto utamo vita, equip ring, auto heal, auto attack, and talk.</div>
+            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, auto fishing, auto invisible, auto utamo vita, equip ring, auto heal, auto attack, and talk.</div>
           </div>
         </div>
         <div class="mb-side-column">
@@ -1223,6 +1237,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const runeEnabledInput = panel.querySelector("#k9x-rune-enabled");
     const autoEatEnabledInput = panel.querySelector("#k9x-auto-eat-enabled");
     const autoEatHotkeyInput = panel.querySelector("#k9x-auto-eat-hotkey");
+    const autoFishingEnabledInput = panel.querySelector("#k9x-auto-fishing-enabled");
     const autoInvisibleEnabledInput = panel.querySelector("#k9x-auto-invisible-enabled");
     const autoMagicShieldEnabledInput = panel.querySelector("#k9x-auto-magic-shield-enabled");
     const equipRingEnabledInput = panel.querySelector("#k9x-equip-ring-enabled");
@@ -1401,6 +1416,22 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         }
 
         refreshAutoEatStatus();
+      });
+    }
+
+    if (autoFishingEnabledInput) {
+      autoFishingEnabledInput.checked = !!bot.fishing?.status?.().running;
+      autoFishingEnabledInput.addEventListener("change", () => {
+        if (autoFishingEnabledInput.checked) {
+          const started = bot.fishing.start({ promptHotbarSlot: true });
+          if (!started) {
+            autoFishingEnabledInput.checked = false;
+          }
+        } else {
+          bot.fishing.stop();
+        }
+
+        refreshAutoFishingStatus();
       });
     }
 
@@ -1813,6 +1844,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoAttackStatus();
     refreshAutoAttackFilterControls();
     refreshAutoEatStatus();
+    refreshAutoFishingStatus();
     refreshCaveStatus();
     refreshCaveModeStatus();
     refreshEquipRingStatus();
@@ -1835,6 +1867,11 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const talkStatusTimerId = window.setInterval(refreshTalkStatus, 1000);
     bot.addCleanup(() => {
       window.clearInterval(talkStatusTimerId);
+    });
+
+    const autoFishingStatusTimerId = window.setInterval(refreshAutoFishingStatus, 1000);
+    bot.addCleanup(() => {
+      window.clearInterval(autoFishingStatusTimerId);
     });
 
     const caveStatusTimerId = window.setInterval(() => {
@@ -1863,6 +1900,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoAttackStatus,
     refreshAutoAttackFilterControls,
     refreshAutoEatStatus,
+    refreshAutoFishingStatus,
     refreshCaveStatus,
     refreshCaveModeStatus,
     refreshCavePresetControls,

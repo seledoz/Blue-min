@@ -301,6 +301,10 @@ window.__minibiaBotBundle.createBot = function createBot() {
         this.eat.stop({ persistEnabled: false });
       }
 
+      if (this.fishing?.stop) {
+        this.fishing.stop({ persistEnabled: false });
+      }
+
       if (this.talk?.stop) {
         this.talk.stop({ persistEnabled: false });
       }
@@ -5884,6 +5888,275 @@ window.__minibiaBotBundle.installAutoEatModule = function installAutoEatModule(b
 };
 window.__minibiaBotBundle = window.__minibiaBotBundle || {};
 
+window.__minibiaBotBundle.installAutoFishingModule = function installAutoFishingModule(bot) {
+  const configStorageKey = "k9x.fishing.config";
+  const state = {
+    running: false,
+    timerId: null,
+    lastCastAt: 0,
+    mouseX: null,
+    mouseY: null,
+    listeningForRightClick: false,
+  };
+
+  const config = Object.assign(
+    {
+      tickMs: 200,
+      rodHotbarSlot: null,
+      enabled: false,
+    },
+    bot.storage.get(configStorageKey, {})
+  );
+  const storedTickMs = Number(config.tickMs);
+  config.tickMs = !Number.isFinite(storedTickMs) || storedTickMs >= 1000
+    ? 200
+    : Math.max(50, storedTickMs);
+
+  function persistConfig() {
+    bot.storage.set(configStorageKey, { ...config });
+  }
+
+  function normalizeHotbarSlot(slot) {
+    const value = Number(slot);
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+
+    const normalized = Math.trunc(value);
+    if (normalized < 1 || normalized > 12) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  function readRodHotbarSlotFromPrompt(defaultSlot = null) {
+    const fallback = normalizeHotbarSlot(defaultSlot) || 1;
+    const input = window.prompt("Fishing rod hotkey slot (1-12)", String(fallback));
+
+    if (input == null) {
+      return null;
+    }
+
+    const slot = normalizeHotbarSlot(input);
+    if (!slot) {
+      window.alert("Invalid slot. Use a number from 1 to 12.");
+      return null;
+    }
+
+    return slot;
+  }
+
+  function trackMousePosition(event) {
+    state.mouseX = Number(event?.clientX);
+    state.mouseY = Number(event?.clientY);
+  }
+
+  function dispatchLeftClickAtPointer() {
+    if (!Number.isFinite(state.mouseX) || !Number.isFinite(state.mouseY)) {
+      return false;
+    }
+
+    const target = document.elementFromPoint(state.mouseX, state.mouseY);
+    if (!target) {
+      return false;
+    }
+
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: state.mouseX,
+      clientY: state.mouseY,
+      button: 0,
+      buttons: 1,
+    };
+
+    target.dispatchEvent(new MouseEvent("mousedown", eventInit));
+    target.dispatchEvent(new MouseEvent("mouseup", eventInit));
+    target.dispatchEvent(new MouseEvent("click", eventInit));
+    return true;
+  }
+
+  function handleRightClickToStop(event) {
+    if (!state.running) {
+      return;
+    }
+
+    if (event?.button === 2 || event?.type === "contextmenu") {
+      stop();
+    }
+  }
+
+  function ensureRightClickStopListener() {
+    if (state.listeningForRightClick) {
+      return;
+    }
+
+    window.addEventListener("mousedown", handleRightClickToStop, true);
+    window.addEventListener("contextmenu", handleRightClickToStop, true);
+    state.listeningForRightClick = true;
+  }
+
+  function tryFish() {
+    if (!config.enabled) {
+      return false;
+    }
+
+    const slot = normalizeHotbarSlot(config.rodHotbarSlot);
+    if (!slot) {
+      return false;
+    }
+
+    const hotbarClicked = bot.clickHotbar(slot - 1);
+    const waterClicked = dispatchLeftClickAtPointer();
+
+    if (hotbarClicked && waterClicked) {
+      state.lastCastAt = Date.now();
+      return true;
+    }
+
+    return false;
+  }
+
+  function scheduleNextTick() {
+    if (!state.running) {
+      return;
+    }
+
+    state.timerId = window.setTimeout(() => {
+      tick();
+    }, config.tickMs);
+  }
+
+  function tick() {
+    if (!state.running) {
+      return;
+    }
+
+    try {
+      tryFish();
+    } catch (error) {
+      bot.log("auto fishing tick failed", error?.message || error);
+    } finally {
+      scheduleNextTick();
+    }
+  }
+
+  function start(overrides = {}) {
+    const promptHotbarSlot = overrides.promptHotbarSlot !== false;
+    let nextRodHotbarSlot = normalizeHotbarSlot(overrides.rodHotbarSlot);
+
+    if (!nextRodHotbarSlot) {
+      const fallbackSlot = normalizeHotbarSlot(config.rodHotbarSlot);
+      if (promptHotbarSlot) {
+        nextRodHotbarSlot = readRodHotbarSlotFromPrompt(fallbackSlot);
+        if (!nextRodHotbarSlot) {
+          return false;
+        }
+      } else {
+        nextRodHotbarSlot = fallbackSlot;
+      }
+    }
+
+    if (!nextRodHotbarSlot) {
+      bot.log("auto fishing missing rod hotbar slot");
+      return false;
+    }
+
+    Object.assign(config, overrides, {
+      enabled: true,
+      rodHotbarSlot: nextRodHotbarSlot,
+      tickMs: Math.max(50, Number(overrides.tickMs) || config.tickMs || 200),
+    });
+    persistConfig();
+
+    if (bot.cave?.status?.().running) {
+      bot.cave.stop();
+    }
+
+    if (state.running) {
+      bot.ui?.refreshAutoFishingStatus?.();
+      return false;
+    }
+
+    state.running = true;
+    ensureRightClickStopListener();
+    bot.log("auto fishing started", { rodHotbarSlot: config.rodHotbarSlot });
+    bot.ui?.refreshAutoFishingStatus?.();
+    tick();
+    return true;
+  }
+
+  function stop(options = {}) {
+    const shouldPersistEnabled = options.persistEnabled !== false;
+    state.running = false;
+
+    if (state.timerId != null) {
+      window.clearTimeout(state.timerId);
+      state.timerId = null;
+    }
+
+    if (shouldPersistEnabled) {
+      config.enabled = false;
+      persistConfig();
+    }
+
+    bot.log("auto fishing stopped");
+    bot.ui?.refreshAutoFishingStatus?.();
+    return true;
+  }
+
+  function status() {
+    return {
+      running: state.running,
+      config: { ...config },
+      lastCastAt: state.lastCastAt,
+    };
+  }
+
+  function updateConfig(nextConfig = {}) {
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "rodHotbarSlot")) {
+      nextConfig.rodHotbarSlot = normalizeHotbarSlot(nextConfig.rodHotbarSlot) ?? config.rodHotbarSlot;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nextConfig, "tickMs")) {
+      nextConfig.tickMs = Math.max(50, Number(nextConfig.tickMs) || config.tickMs || 200);
+    }
+
+    Object.assign(config, nextConfig);
+    config.tickMs = Math.max(50, Number(config.tickMs) || 200);
+    persistConfig();
+    bot.log("auto fishing config updated", { ...config });
+    return { ...config };
+  }
+
+  window.addEventListener("mousemove", trackMousePosition, { passive: true });
+  bot.addCleanup(() => {
+    window.removeEventListener("mousemove", trackMousePosition, { passive: true });
+    window.removeEventListener("mousedown", handleRightClickToStop, true);
+    window.removeEventListener("contextmenu", handleRightClickToStop, true);
+  });
+
+  if (config.enabled) {
+    start({ promptHotbarSlot: false });
+  }
+
+  bot.fishing = {
+    start,
+    stop,
+    status,
+    updateConfig,
+    tryFish,
+    normalizeHotbarSlot,
+    config,
+  };
+
+  bot.startAutoFishing = start;
+  bot.stopAutoFishing = stop;
+};
+window.__minibiaBotBundle = window.__minibiaBotBundle || {};
+
 window.__minibiaBotBundle.installTalkModule = function installTalkModule(bot) {
   const configStorageKey = "k9x.talk.config";
   const legacyDefaultModels = ["gemini-3-pro-preview", "gemini-2.0-flash"];
@@ -6764,6 +7037,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     autoEatToggle.checked = !!bot.eat?.status?.().running;
   }
 
+  function refreshAutoFishingStatus() {
+    const autoFishingToggle = document.getElementById("k9x-auto-fishing-enabled");
+    if (!autoFishingToggle) return;
+
+    autoFishingToggle.checked = !!bot.fishing?.status?.().running;
+  }
+
   function refreshAutoHealStatus() {
     const autoHealToggle = document.getElementById("k9x-auto-heal-enabled");
     if (!autoHealToggle) return;
@@ -7597,6 +7877,13 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
               </div>
               <div class="mb-row">
                 <label class="mb-toggle">
+                  <input type="checkbox" id="k9x-auto-fishing-enabled" />
+                  <span>Auto Fishing</span>
+                </label>
+                <div class="mb-small-note">On enable it asks for the rod hotkey slot, then uses it and left-clicks fast (about every 200ms). Right-click disables it.</div>
+              </div>
+              <div class="mb-row">
+                <label class="mb-toggle">
                   <input type="checkbox" id="k9x-auto-invisible-enabled" />
                   <span>Auto Invisible</span>
                 </label>
@@ -7619,7 +7906,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
             </div>
           </div>
           <div class="mb-section mb-column-section">
-            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, auto invisible, auto utamo vita, equip ring, auto heal, auto attack, and talk.</div>
+            <div class="mb-note">Loaded routines: Panic Runner, magic level trainer, auto eat, auto fishing, auto invisible, auto utamo vita, equip ring, auto heal, auto attack, and talk.</div>
           </div>
         </div>
         <div class="mb-side-column">
@@ -7779,6 +8066,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const runeEnabledInput = panel.querySelector("#k9x-rune-enabled");
     const autoEatEnabledInput = panel.querySelector("#k9x-auto-eat-enabled");
     const autoEatHotkeyInput = panel.querySelector("#k9x-auto-eat-hotkey");
+    const autoFishingEnabledInput = panel.querySelector("#k9x-auto-fishing-enabled");
     const autoInvisibleEnabledInput = panel.querySelector("#k9x-auto-invisible-enabled");
     const autoMagicShieldEnabledInput = panel.querySelector("#k9x-auto-magic-shield-enabled");
     const equipRingEnabledInput = panel.querySelector("#k9x-equip-ring-enabled");
@@ -7957,6 +8245,22 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
         }
 
         refreshAutoEatStatus();
+      });
+    }
+
+    if (autoFishingEnabledInput) {
+      autoFishingEnabledInput.checked = !!bot.fishing?.status?.().running;
+      autoFishingEnabledInput.addEventListener("change", () => {
+        if (autoFishingEnabledInput.checked) {
+          const started = bot.fishing.start({ promptHotbarSlot: true });
+          if (!started) {
+            autoFishingEnabledInput.checked = false;
+          }
+        } else {
+          bot.fishing.stop();
+        }
+
+        refreshAutoFishingStatus();
       });
     }
 
@@ -8369,6 +8673,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoAttackStatus();
     refreshAutoAttackFilterControls();
     refreshAutoEatStatus();
+    refreshAutoFishingStatus();
     refreshCaveStatus();
     refreshCaveModeStatus();
     refreshEquipRingStatus();
@@ -8391,6 +8696,11 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     const talkStatusTimerId = window.setInterval(refreshTalkStatus, 1000);
     bot.addCleanup(() => {
       window.clearInterval(talkStatusTimerId);
+    });
+
+    const autoFishingStatusTimerId = window.setInterval(refreshAutoFishingStatus, 1000);
+    bot.addCleanup(() => {
+      window.clearInterval(autoFishingStatusTimerId);
     });
 
     const caveStatusTimerId = window.setInterval(() => {
@@ -8419,6 +8729,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     refreshAutoAttackStatus,
     refreshAutoAttackFilterControls,
     refreshAutoEatStatus,
+    refreshAutoFishingStatus,
     refreshCaveStatus,
     refreshCaveModeStatus,
     refreshCavePresetControls,
@@ -8450,6 +8761,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     ["minibiaBot.cave.presets", "k9x.cave.presets"],
     ["minibiaBot.equipRing.config", "k9x.equipRing.config"],
     ["minibiaBot.eat.config", "k9x.eat.config"],
+    ["minibiaBot.fishing.config", "k9x.fishing.config"],
     ["minibiaBot.talk.config", "k9x.talk.config"],
     ["minibiaBot.panic.config", "k9x.panic.config"],
     ["minibiaBot.pz.home", "k9x.pz.home"],
@@ -8468,6 +8780,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     ["gameHelper.cave.presets", "k9x.cave.presets"],
     ["gameHelper.equipRing.config", "k9x.equipRing.config"],
     ["gameHelper.eat.config", "k9x.eat.config"],
+    ["gameHelper.fishing.config", "k9x.fishing.config"],
     ["gameHelper.talk.config", "k9x.talk.config"],
     ["gameHelper.panic.config", "k9x.panic.config"],
     ["gameHelper.pz.home", "k9x.pz.home"],
@@ -8484,6 +8797,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     ["cave", "k9x.cave.config"],
     ["equipRing", "k9x.equipRing.config"],
     ["eat", "k9x.eat.config"],
+    ["fishing", "k9x.fishing.config"],
     ["talk", "k9x.talk.config"],
   ];
 
@@ -8572,6 +8886,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     currentBundle.installCaveModule(bot);
     currentBundle.installEquipRingModule(bot);
     currentBundle.installAutoEatModule(bot);
+    currentBundle.installAutoFishingModule(bot);
     currentBundle.installTalkModule(bot);
     currentBundle.installPanel(bot);
 
@@ -8595,6 +8910,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
       cave: bot.cave.status(),
       equipRing: bot.equipRing.status(),
       eat: bot.eat.status(),
+      fishing: bot.fishing.status(),
       talk: bot.talk.status(),
     });
 
@@ -8603,7 +8919,7 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
 
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "eat", "talk", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "eat", "fishing", "talk", "ui"],
     });
     console.log("minibiaBot.reload()");
     console.log("minibiaBot.xray.status()");
@@ -8628,6 +8944,8 @@ window.__minibiaBotBundle.installPanel = function installPanel(bot) {
     console.log("minibiaBot.equipRing.stop()");
     console.log("minibiaBot.eat.start()");
     console.log("minibiaBot.eat.stop()");
+    console.log("minibiaBot.fishing.start()");
+    console.log("minibiaBot.fishing.stop()");
     console.log("minibiaBot.talk.updateConfig({ apiKey: \"...\" })");
     console.log("minibiaBot.talk.start()");
     console.log("minibiaBot.talk.stop()");
