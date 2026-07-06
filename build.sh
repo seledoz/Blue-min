@@ -14,6 +14,7 @@ cat \
   src/modules/auto-attack-aoe.js \
   src/modules/red-text-alert.js \
   src/modules/cave.js \
+  src/modules/cave-smart-path.js \
   src/modules/equip-ring.js \
   src/modules/auto-eat.js \
   src/modules/auto-fishing.js \
