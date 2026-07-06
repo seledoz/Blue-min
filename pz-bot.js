@@ -1,6 +1,6 @@
 (() => {
   const repository = "seledoz/Blue-min";
-  const ref = "feature/aoe-auto-attack";
+  const ref = "main";
   const rawBaseUrl = `https://raw.githubusercontent.com/${repository}/${ref}`;
   const sourceFiles = [
     "src/core.js",
@@ -33,7 +33,7 @@
   }
 
   async function loadBot() {
-    console.log("[minibia-bot] loading feature branch bundle", { repository, ref });
+    console.log("[minibia-bot] loading bundle", { repository, ref });
     window.__minibiaBotBundle = {};
 
     for (const file of sourceFiles) {
@@ -42,6 +42,6 @@
   }
 
   loadBot().catch((error) => {
-    console.error("[minibia-bot] failed to load feature branch bundle", error);
+    console.error("[minibia-bot] failed to load bundle", error);
   });
 })();
