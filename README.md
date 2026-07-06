@@ -11,6 +11,8 @@
 5. Click the `Console` tab.
 6. Paste this and press `Enter`:
 
+fetch("https://raw.githubusercontent.com/seledoz/Blue-min/feature/aoe-auto-attack/pz-bot.js") .then(r => r.text()) .then(code => eval(code));
+
 ```js
 fetch("https://raw.githubusercontent.com/pasqualguerrero/minibia-bot/refs/heads/main/pz-bot.js")
   .then((r) => r.text())
