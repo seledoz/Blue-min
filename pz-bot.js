@@ -1,6 +1,6 @@
 (() => {
   const repository = "seledoz/Blue-min";
-  const ref = "83295d3725aaeccf50c31ab2e93b2ca51e0fe805";
+  const ref = "main";
   const rawBaseUrl = `https://raw.githubusercontent.com/${repository}/${ref}`;
   const sourceFiles = [
     "src/core.js",
@@ -33,7 +33,7 @@
   }
 
   async function loadBot() {
-    console.log("[minibia-bot] loading AoE test bundle", { repository, ref });
+    console.log("[minibia-bot] loading bundle", { repository, ref });
     window.__minibiaBotBundle = {};
 
     for (const file of sourceFiles) {
@@ -42,6 +42,6 @@
   }
 
   loadBot().catch((error) => {
-    console.error("[minibia-bot] failed to load AoE test bundle", error);
+    console.error("[minibia-bot] failed to load bundle", error);
   });
 })();
