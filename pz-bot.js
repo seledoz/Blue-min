@@ -13,6 +13,7 @@
     "src/modules/auto-magic-shield.js",
     "src/modules/auto-attack.js",
     "src/modules/auto-attack-aoe.js",
+    "src/modules/red-text-alert.js",
     "src/modules/cave.js",
     "src/modules/equip-ring.js",
     "src/modules/auto-eat.js",
