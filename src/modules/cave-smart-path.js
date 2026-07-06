@@ -6,21 +6,19 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   }
 
   const configStorageKey = "k9x.caveSmartPath.config";
-  const PATHFINDER_CONFIG = {
-    pathCacheTTL: 2000,
-    matrixCacheTTL: 2000,
-  };
   const pathCache = new Map();
   const matrixCache = new Map();
+  const cacheMs = 2000;
   const state = {
     installed: false,
     originalFindPath: null,
     lastSmartPathAt: 0,
     lastPathLength: 0,
     lastTargetTile: null,
-    lastError: null,
     lastBlockedCavePathAt: 0,
     blockedCavePathCount: 0,
+    lastVisibleMonsterCount: 0,
+    lastError: null,
   };
 
   const config = Object.assign(
@@ -30,7 +28,8 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
       viewportDx: 8,
       viewportDy: 6,
       useOnlyForCave: true,
-      pauseCavePathWhileTargeting: true,
+      pauseCavePathWhenMonstersVisible: true,
+      requireAutoAttackEnabled: true,
     },
     bot.storage.get(configStorageKey, {}) || {}
   );
@@ -40,7 +39,8 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   config.viewportDx = normalizePositiveInteger(config.viewportDx, 8);
   config.viewportDy = normalizePositiveInteger(config.viewportDy, 6);
   config.useOnlyForCave = config.useOnlyForCave !== false;
-  config.pauseCavePathWhileTargeting = config.pauseCavePathWhileTargeting !== false;
+  config.pauseCavePathWhenMonstersVisible = config.pauseCavePathWhenMonstersVisible !== false;
+  config.requireAutoAttackEnabled = config.requireAutoAttackEnabled !== false;
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -52,22 +52,12 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   }
 
   function normalizePosition(value) {
-    if (!value) {
-      return null;
-    }
-
+    if (!value) return null;
     const x = Number(value.x);
     const y = Number(value.y);
     const z = Number(value.z);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
-      return null;
-    }
-
-    return {
-      x: Math.trunc(x),
-      y: Math.trunc(y),
-      z: Math.trunc(z),
-    };
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    return { x: Math.trunc(x), y: Math.trunc(y), z: Math.trunc(z) };
   }
 
   function isSamePosition(left, right) {
@@ -77,11 +67,40 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   }
 
   function getDistance(from, to) {
-    if (!from || !to || Number(from.z) !== Number(to.z)) {
-      return Number.POSITIVE_INFINITY;
-    }
-
+    if (!from || !to || Number(from.z) !== Number(to.z)) return Number.POSITIVE_INFINITY;
     return Math.abs(Number(from.x) - Number(to.x)) + Math.abs(Number(from.y) - Number(to.y));
+  }
+
+  function normalizeCreatureName(name) {
+    return String(name || "").trim().toLowerCase();
+  }
+
+  function shouldCountMonster(monster) {
+    if (!monster) return false;
+    const attackConfig = bot.attack?.config || {};
+    const mode = attackConfig.targetFilterMode === "include" || attackConfig.targetFilterMode === "exclude"
+      ? attackConfig.targetFilterMode
+      : "all";
+    const monsterName = normalizeCreatureName(monster.name || "Mob");
+    const includedNames = new Set((attackConfig.includedCreatureNames || []).map(normalizeCreatureName));
+    const excludedNames = new Set((attackConfig.excludedCreatureNames || []).map(normalizeCreatureName));
+
+    if (mode === "include") {
+      if (!includedNames.size) return true;
+      return includedNames.has(monsterName) && !excludedNames.has(monsterName);
+    }
+    if (mode === "exclude") return !excludedNames.has(monsterName);
+    return !excludedNames.has(monsterName);
+  }
+
+  function getVisibleTargetableMonsters() {
+    return (bot.xray?.getVisibleMonsters?.({ sameFloorOnly: true }) || []).filter(shouldCountMonster);
+  }
+
+  function autoAttackIsReady() {
+    if (!config.requireAutoAttackEnabled) return true;
+    const attackStatus = bot.attack?.status?.() || null;
+    return !!attackStatus?.running || !!attackStatus?.config?.enabled;
   }
 
   function findBestIndex(openSet) {
@@ -97,8 +116,7 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   }
 
   function aStarPath(start, goal, getWalkable, getNeighbors, tolerance = 0) {
-    const startZ = start.z;
-    const openSet = [{ x: start.x, y: start.y, z: startZ, f: 0, g: 0, h: 0, parent: null }];
+    const openSet = [{ x: start.x, y: start.y, z: start.z, f: 0, g: 0, h: 0, parent: null }];
     const closedSet = new Set();
     const key = (position) => `${position.x},${position.y}`;
 
@@ -107,7 +125,6 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
       const current = openSet[bestIndex];
       openSet[bestIndex] = openSet[openSet.length - 1];
       openSet.pop();
-      const currentKey = key(current);
 
       if (Math.abs(current.x - goal.x) + Math.abs(current.y - goal.y) <= tolerance) {
         const path = [];
@@ -119,22 +136,15 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
         return path;
       }
 
-      closedSet.add(currentKey);
+      closedSet.add(key(current));
 
       for (const neighbor of getNeighbors(current)) {
         const neighborKey = key(neighbor);
-        if (closedSet.has(neighborKey)) {
-          continue;
-        }
-        if (!getWalkable(neighbor.x, neighbor.y)) {
-          continue;
-        }
-
+        if (closedSet.has(neighborKey) || !getWalkable(neighbor.x, neighbor.y)) continue;
         const g = current.g + 1;
         const h = Math.abs(neighbor.x - goal.x) + Math.abs(neighbor.y - goal.y);
         const f = g + h;
         const existing = openSet.find((node) => node.x === neighbor.x && node.y === neighbor.y);
-
         if (existing) {
           if (g < existing.g) {
             existing.g = g;
@@ -142,7 +152,7 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
             existing.parent = current;
           }
         } else {
-          openSet.push({ x: neighbor.x, y: neighbor.y, z: startZ, f, g, h, parent: current });
+          openSet.push({ x: neighbor.x, y: neighbor.y, z: start.z, f, g, h, parent: current });
         }
       }
     }
@@ -153,21 +163,15 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   function getAStarWalkabilityMatrix(z) {
     const cacheKey = `matrix_${z}`;
     const cached = matrixCache.get(cacheKey);
-    if (cached && Date.now() - cached.at < PATHFINDER_CONFIG.matrixCacheTTL) {
-      return cached.matrix;
-    }
+    if (cached && Date.now() - cached.at < cacheMs) return cached.matrix;
 
     const chunks = window.gameClient?.world?.chunks || [];
     const matrix = new Map();
     try {
       for (const chunk of chunks) {
-        if (!chunk?.tiles) {
-          continue;
-        }
+        if (!chunk?.tiles) continue;
         for (const tile of chunk.tiles) {
-          if (!tile?.__position || tile.__position.z !== z) {
-            continue;
-          }
+          if (!tile?.__position || tile.__position.z !== z) continue;
           matrix.set(`${tile.__position.x},${tile.__position.y}`, tile.isWalkable ? tile.isWalkable() : false);
         }
       }
@@ -185,7 +189,6 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
       { x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 },
       { x: -1, y: -1 }, { x: 1, y: -1 }, { x: -1, y: 1 }, { x: 1, y: 1 },
     ];
-
     return directions
       .map((direction) => ({ x: current.x + direction.x, y: current.y + direction.y }))
       .filter((neighbor) => matrix.get(`${neighbor.x},${neighbor.y}`) === true);
@@ -194,10 +197,7 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   function getCachedPath(from, to) {
     const key = `${from.x},${from.y},${from.z}-${to.x},${to.y},${to.z}`;
     const entry = pathCache.get(key);
-    if (entry && Date.now() - entry.at < PATHFINDER_CONFIG.pathCacheTTL) {
-      return entry.path;
-    }
-    return null;
+    return entry && Date.now() - entry.at < cacheMs ? entry.path : null;
   }
 
   function setCachedPath(from, to, path) {
@@ -208,20 +208,12 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   function findPathAStar(from, to) {
     const fromPosition = normalizePosition(from);
     const toPosition = normalizePosition(to);
-    if (!fromPosition || !toPosition) {
-      return null;
-    }
-    if (fromPosition.x === toPosition.x && fromPosition.y === toPosition.y && fromPosition.z === toPosition.z) {
-      return [];
-    }
-    if (fromPosition.z !== toPosition.z) {
-      return null;
-    }
+    if (!fromPosition || !toPosition) return null;
+    if (fromPosition.x === toPosition.x && fromPosition.y === toPosition.y && fromPosition.z === toPosition.z) return [];
+    if (fromPosition.z !== toPosition.z) return null;
 
     const cached = getCachedPath(fromPosition, toPosition);
-    if (cached) {
-      return cached;
-    }
+    if (cached) return cached;
 
     const matrix = getAStarWalkabilityMatrix(fromPosition.z);
     const tolerance = Math.max(0, Number(bot.cave?.config?.waypointTolerance) || 0);
@@ -233,65 +225,36 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
       tolerance
     );
 
-    if (path) {
-      setCachedPath(fromPosition, toPosition, path);
-    }
+    if (path) setCachedPath(fromPosition, toPosition, path);
     return path;
   }
 
   function isOnScreen(position, playerPosition) {
-    if (!position || !playerPosition) {
-      return false;
-    }
-
+    if (!position || !playerPosition) return false;
     return Math.abs(position.x - playerPosition.x) <= config.viewportDx &&
       Math.abs(position.y - playerPosition.y) <= config.viewportDy &&
       position.z === playerPosition.z;
   }
 
   function filterPathToViewport(path, playerPosition) {
-    if (!path || !path.length) {
-      return path;
-    }
-
+    if (!path || !path.length) return path;
     const onScreen = path.filter((position) => isOnScreen(position, playerPosition));
-    if (onScreen.length > 0) {
-      return onScreen;
-    }
-
+    if (onScreen.length > 0) return onScreen;
     const extended = path.filter((position) =>
       Math.abs(position.x - playerPosition.x) <= config.viewportDx * 2 &&
       Math.abs(position.y - playerPosition.y) <= config.viewportDy * 2 &&
       position.z === playerPosition.z
     );
-
-    if (extended.length > 0) {
-      return [extended[0]];
-    }
-
-    return path.slice(0, 1);
+    return extended.length > 0 ? [extended[0]] : path.slice(0, 1);
   }
 
   function shouldUseSmartPath(from, to) {
-    if (!config.enabled) {
-      return false;
-    }
-
+    if (!config.enabled) return false;
     const fromPosition = normalizePosition(from);
     const toPosition = normalizePosition(to);
-    if (!fromPosition || !toPosition || fromPosition.z !== toPosition.z) {
-      return false;
-    }
-
-    if (getDistance(fromPosition, toPosition) < config.minDistance) {
-      return false;
-    }
-
-    if (config.useOnlyForCave) {
-      const caveStatus = bot.cave?.status?.() || null;
-      return !!caveStatus?.running;
-    }
-
+    if (!fromPosition || !toPosition || fromPosition.z !== toPosition.z) return false;
+    if (getDistance(fromPosition, toPosition) < config.minDistance) return false;
+    if (config.useOnlyForCave) return !!bot.cave?.status?.()?.running;
     return true;
   }
 
@@ -299,58 +262,41 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
     const fromPosition = normalizePosition(from);
     const toPosition = normalizePosition(to);
     const path = findPathAStar(fromPosition, toPosition);
+    if (!path || !path.length) return null;
 
-    if (!path || !path.length) {
-      return null;
-    }
-
-    const targetOnScreen = isOnScreen(toPosition, fromPosition);
     let targetTile = null;
-
+    const targetOnScreen = isOnScreen(toPosition, fromPosition);
     if (targetOnScreen) {
       targetTile = toPosition;
     } else {
       const visiblePath = filterPathToViewport(path, fromPosition);
-      if (visiblePath && visiblePath.length > 1) {
-        targetTile = visiblePath[visiblePath.length - 1];
-      } else if (visiblePath && visiblePath.length === 1) {
-        targetTile = visiblePath[0];
-      } else {
-        targetTile = path[Math.min(config.viewportDx, path.length - 1)];
-      }
+      targetTile = visiblePath?.length > 1
+        ? visiblePath[visiblePath.length - 1]
+        : visiblePath?.[0] || path[Math.min(config.viewportDx, path.length - 1)];
     }
 
-    if (!targetTile || (targetTile.x === fromPosition.x && targetTile.y === fromPosition.y)) {
-      return null;
-    }
-
+    if (!targetTile || (targetTile.x === fromPosition.x && targetTile.y === fromPosition.y)) return null;
     return { targetTile, path, targetOnScreen };
   }
 
-  function attackHasActiveTarget() {
-    const attackStatus = bot.attack?.status?.() || null;
-    return !!attackStatus?.currentTarget || !!attackStatus?.combatActive || Number(attackStatus?.targetCount || 0) > 0;
-  }
-
   function shouldBlockCaveWaypointPath(to) {
-    if (!config.pauseCavePathWhileTargeting || !attackHasActiveTarget()) {
-      return false;
-    }
-
+    if (!config.pauseCavePathWhenMonstersVisible || !autoAttackIsReady()) return false;
     const caveStatus = bot.cave?.status?.() || null;
-    if (!caveStatus?.running || !caveStatus?.currentWaypoint) {
-      return false;
-    }
+    if (!caveStatus?.running || !caveStatus?.currentWaypoint) return false;
+    if (!isSamePosition(to, caveStatus.currentWaypoint)) return false;
 
-    return isSamePosition(to, caveStatus.currentWaypoint);
+    const monsters = getVisibleTargetableMonsters();
+    state.lastVisibleMonsterCount = monsters.length;
+    return monsters.length > 0;
   }
 
   function blockCaveWaypointPath() {
     state.lastBlockedCavePathAt = Date.now();
     state.blockedCavePathCount += 1;
     if (state.blockedCavePathCount === 1 || state.blockedCavePathCount % 10 === 0) {
-      bot.log("cave waypoint movement paused while auto attack has a target", {
+      bot.log("cave waypoint movement paused while monsters are visible", {
         blockedCavePathCount: state.blockedCavePathCount,
+        visibleMonsterCount: state.lastVisibleMonsterCount,
       });
     }
     return null;
@@ -358,20 +304,12 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
 
   function install() {
     const pathfinder = window.gameClient?.world?.pathfinder;
-    if (!pathfinder || typeof pathfinder.findPath !== "function") {
-      return false;
-    }
-
-    if (state.installed) {
-      return true;
-    }
+    if (!pathfinder || typeof pathfinder.findPath !== "function") return false;
+    if (state.installed) return true;
 
     state.originalFindPath = pathfinder.findPath.bind(pathfinder);
-
     pathfinder.findPath = function smartFindPath(from, to, ...args) {
-      if (shouldBlockCaveWaypointPath(to)) {
-        return blockCaveWaypointPath();
-      }
+      if (shouldBlockCaveWaypointPath(to)) return blockCaveWaypointPath();
 
       if (shouldUseSmartPath(from, to)) {
         try {
@@ -403,49 +341,26 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
 
   function uninstall() {
     const pathfinder = window.gameClient?.world?.pathfinder;
-    if (state.installed && pathfinder && state.originalFindPath) {
-      pathfinder.findPath = state.originalFindPath;
-    }
+    if (state.installed && pathfinder && state.originalFindPath) pathfinder.findPath = state.originalFindPath;
     state.installed = false;
     state.originalFindPath = null;
   }
 
   function cleanupCaches() {
     const now = Date.now();
-    for (const [key, entry] of pathCache) {
-      if (now - entry.at >= PATHFINDER_CONFIG.pathCacheTTL) {
-        pathCache.delete(key);
-      }
-    }
-    for (const [key, entry] of matrixCache) {
-      if (now - entry.at >= PATHFINDER_CONFIG.matrixCacheTTL) {
-        matrixCache.delete(key);
-      }
-    }
+    for (const [key, entry] of pathCache) if (now - entry.at >= cacheMs) pathCache.delete(key);
+    for (const [key, entry] of matrixCache) if (now - entry.at >= cacheMs) matrixCache.delete(key);
   }
 
   function updateConfig(nextConfig = {}) {
     const normalized = { ...nextConfig };
-
-    if (Object.prototype.hasOwnProperty.call(normalized, "enabled")) {
-      normalized.enabled = normalized.enabled !== false;
-    }
-    if (Object.prototype.hasOwnProperty.call(normalized, "minDistance")) {
-      normalized.minDistance = normalizePositiveInteger(normalized.minDistance, config.minDistance || 8);
-    }
-    if (Object.prototype.hasOwnProperty.call(normalized, "viewportDx")) {
-      normalized.viewportDx = normalizePositiveInteger(normalized.viewportDx, config.viewportDx || 8);
-    }
-    if (Object.prototype.hasOwnProperty.call(normalized, "viewportDy")) {
-      normalized.viewportDy = normalizePositiveInteger(normalized.viewportDy, config.viewportDy || 6);
-    }
-    if (Object.prototype.hasOwnProperty.call(normalized, "useOnlyForCave")) {
-      normalized.useOnlyForCave = normalized.useOnlyForCave !== false;
-    }
-    if (Object.prototype.hasOwnProperty.call(normalized, "pauseCavePathWhileTargeting")) {
-      normalized.pauseCavePathWhileTargeting = normalized.pauseCavePathWhileTargeting !== false;
-    }
-
+    if (Object.prototype.hasOwnProperty.call(normalized, "enabled")) normalized.enabled = normalized.enabled !== false;
+    if (Object.prototype.hasOwnProperty.call(normalized, "minDistance")) normalized.minDistance = normalizePositiveInteger(normalized.minDistance, config.minDistance || 8);
+    if (Object.prototype.hasOwnProperty.call(normalized, "viewportDx")) normalized.viewportDx = normalizePositiveInteger(normalized.viewportDx, config.viewportDx || 8);
+    if (Object.prototype.hasOwnProperty.call(normalized, "viewportDy")) normalized.viewportDy = normalizePositiveInteger(normalized.viewportDy, config.viewportDy || 6);
+    if (Object.prototype.hasOwnProperty.call(normalized, "useOnlyForCave")) normalized.useOnlyForCave = normalized.useOnlyForCave !== false;
+    if (Object.prototype.hasOwnProperty.call(normalized, "pauseCavePathWhenMonstersVisible")) normalized.pauseCavePathWhenMonstersVisible = normalized.pauseCavePathWhenMonstersVisible !== false;
+    if (Object.prototype.hasOwnProperty.call(normalized, "requireAutoAttackEnabled")) normalized.requireAutoAttackEnabled = normalized.requireAutoAttackEnabled !== false;
     Object.assign(config, normalized);
     persistConfig();
     refreshUiValues();
@@ -457,25 +372,21 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
     return {
       installed: state.installed,
       config: { ...config },
-      cacheSizes: {
-        paths: pathCache.size,
-        matrices: matrixCache.size,
-      },
+      cacheSizes: { paths: pathCache.size, matrices: matrixCache.size },
       lastSmartPathAt: state.lastSmartPathAt,
       lastPathLength: state.lastPathLength,
       lastTargetTile: state.lastTargetTile ? { ...state.lastTargetTile } : null,
       lastBlockedCavePathAt: state.lastBlockedCavePathAt,
       blockedCavePathCount: state.blockedCavePathCount,
+      visibleMonsterCount: getVisibleTargetableMonsters().length,
+      lastVisibleMonsterCount: state.lastVisibleMonsterCount,
       lastError: state.lastError,
     };
   }
 
   function ensureUi() {
     const panel = document.getElementById("k9x-panel");
-    if (!panel || document.getElementById("k9x-cave-smart-path-section")) {
-      return;
-    }
-
+    if (!panel || document.getElementById("k9x-cave-smart-path-section")) return;
     const caveColumn = panel.querySelector(".mb-cave-column") || panel.querySelector(".mb-main-column") || panel.querySelector(".mb-body") || panel;
     const section = document.createElement("div");
     section.className = "mb-section mb-column-section";
@@ -491,27 +402,21 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
       </div>
     `;
     caveColumn.appendChild(section);
-
     const enabledInput = section.querySelector("#k9x-cave-smart-path-enabled");
     enabledInput?.addEventListener("change", () => {
       updateConfig({ enabled: !!enabledInput.checked });
       refreshUiValues();
     });
-
     refreshUiValues();
   }
 
   function refreshUiValues() {
     const enabledInput = document.getElementById("k9x-cave-smart-path-enabled");
     const statusLabel = document.getElementById("k9x-cave-smart-path-status");
-
-    if (enabledInput) {
-      enabledInput.checked = !!config.enabled;
-    }
-
+    if (enabledInput) enabledInput.checked = !!config.enabled;
     if (statusLabel) {
       statusLabel.textContent = config.enabled
-        ? `Smart path: on${state.blockedCavePathCount ? ` • combat pause ${state.blockedCavePathCount}` : state.lastPathLength ? ` • last path ${state.lastPathLength} tiles` : ""}`
+        ? `Smart path: on${state.blockedCavePathCount ? ` • monster pause ${state.blockedCavePathCount}` : state.lastPathLength ? ` • last path ${state.lastPathLength} tiles` : ""}`
         : "Smart path: off";
     }
   }
@@ -521,23 +426,9 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
     document.getElementById("k9x-cave-smart-path-section")?.remove();
   }
 
-  bot.caveSmartPath = {
-    install,
-    uninstall,
-    status,
-    updateConfig,
-    findPathAStar,
-    getSmartTarget,
-    destroy,
-    config,
-  };
-
+  bot.caveSmartPath = { install, uninstall, status, updateConfig, findPathAStar, getSmartTarget, destroy, config };
   install();
-  window.setTimeout(() => {
-    ensureUi();
-    refreshUiValues();
-  }, 1000);
+  window.setTimeout(() => { ensureUi(); refreshUiValues(); }, 1000);
   bot.addCleanup(destroy);
-
   return bot.caveSmartPath;
 };
