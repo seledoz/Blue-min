@@ -15,6 +15,7 @@
     "src/modules/auto-attack-aoe.js",
     "src/modules/red-text-alert.js",
     "src/modules/cave.js",
+    "src/modules/cave-combat-pause.js",
     "src/modules/equip-ring.js",
     "src/modules/auto-eat.js",
     "src/modules/auto-fishing.js",
