@@ -9,6 +9,7 @@
     ["minibiaBot.attack.config", "k9x.attack.config"],
     ["minibiaBot.attackAoe.config", "k9x.attackAoe.config"],
     ["minibiaBot.redTextAlert.config", "k9x.redTextAlert.config"],
+    ["minibiaBot.caveSmartPath.config", "k9x.caveSmartPath.config"],
     ["minibiaBot.cave.config", "k9x.cave.config"],
     ["minibiaBot.cave.route", "k9x.cave.route"],
     ["minibiaBot.cave.transitions", "k9x.cave.transitions"],
@@ -30,6 +31,7 @@
     ["gameHelper.attack.config", "k9x.attack.config"],
     ["gameHelper.attackAoe.config", "k9x.attackAoe.config"],
     ["gameHelper.redTextAlert.config", "k9x.redTextAlert.config"],
+    ["gameHelper.caveSmartPath.config", "k9x.caveSmartPath.config"],
     ["gameHelper.cave.config", "k9x.cave.config"],
     ["gameHelper.cave.route", "k9x.cave.route"],
     ["gameHelper.cave.transitions", "k9x.cave.transitions"],
@@ -52,6 +54,7 @@
     ["attack", "k9x.attack.config"],
     ["attackAoe", "k9x.attackAoe.config"],
     ["redTextAlert", "k9x.redTextAlert.config"],
+    ["caveSmartPath", "k9x.caveSmartPath.config"],
     ["cave", "k9x.cave.config"],
     ["equipRing", "k9x.equipRing.config"],
     ["eat", "k9x.eat.config"],
@@ -61,28 +64,15 @@
 
   function migrateLegacyStorageKeys() {
     storageKeyMigrations.forEach(([legacyKey, nextKey]) => {
-      if (!legacyKey || !nextKey || legacyKey === nextKey) {
-        return;
-      }
-
+      if (!legacyKey || !nextKey || legacyKey === nextKey) return;
       try {
         const legacyValue = window.localStorage.getItem(legacyKey);
-        if (legacyValue == null) {
-          return;
-        }
-
+        if (legacyValue == null) return;
         const nextValue = window.localStorage.getItem(nextKey);
-        if (nextValue == null) {
-          window.localStorage.setItem(nextKey, legacyValue);
-        }
-
+        if (nextValue == null) window.localStorage.setItem(nextKey, legacyValue);
         window.localStorage.removeItem(legacyKey);
       } catch (error) {
-        console.error("[minibia-bot] failed to migrate storage key", {
-          legacyKey,
-          nextKey,
-          error,
-        });
+        console.error("[minibia-bot] failed to migrate storage key", { legacyKey, nextKey, error });
       }
     });
   }
@@ -90,33 +80,23 @@
   function getPersistedEnabledSnapshot(bot) {
     const snapshot = {};
     const status = typeof bot?.status === "function" ? bot.status() : null;
-
     persistedEnabledModules.forEach(([moduleName]) => {
       const enabled = status?.[moduleName]?.config?.enabled;
-      if (typeof enabled === "boolean") {
-        snapshot[moduleName] = enabled;
-      }
+      if (typeof enabled === "boolean") snapshot[moduleName] = enabled;
     });
-
     return snapshot;
   }
 
   function restorePersistedEnabledSnapshot(snapshot) {
     persistedEnabledModules.forEach(([moduleName, storageKey]) => {
-      if (typeof snapshot?.[moduleName] !== "boolean") {
-        return;
-      }
-
+      if (typeof snapshot?.[moduleName] !== "boolean") return;
       try {
         const rawValue = window.localStorage.getItem(storageKey);
         const config = rawValue ? JSON.parse(rawValue) : {};
         config.enabled = snapshot[moduleName];
         window.localStorage.setItem(storageKey, JSON.stringify(config));
       } catch (error) {
-        console.error("[minibia-bot] failed to restore persisted enabled state", {
-          module: moduleName,
-          error,
-        });
+        console.error("[minibia-bot] failed to restore persisted enabled state", { module: moduleName, error });
       }
     });
   }
@@ -124,15 +104,10 @@
   function boot(currentBundle = bundle) {
     migrateLegacyStorageKeys();
     const previousEnabledSnapshot = getPersistedEnabledSnapshot(window.minibiaBot);
-
-    if (window.minibiaBot?.destroy) {
-      window.minibiaBot.destroy();
-    }
-
+    if (window.minibiaBot?.destroy) window.minibiaBot.destroy();
     restorePersistedEnabledSnapshot(previousEnabledSnapshot);
 
     const bot = currentBundle.createBot();
-
     currentBundle.installPzModule(bot);
     currentBundle.installXrayModule(bot);
     currentBundle.installPanicModule(bot);
@@ -144,6 +119,7 @@
     currentBundle.installAutoAttackAoeModule?.(bot);
     currentBundle.installRedTextAlertModule?.(bot);
     currentBundle.installCaveModule(bot);
+    currentBundle.installCaveSmartPathModule?.(bot);
     currentBundle.installEquipRingModule(bot);
     currentBundle.installAutoEatModule(bot);
     currentBundle.installAutoFishingModule(bot);
@@ -151,15 +127,12 @@
     currentBundle.installPanel(bot);
 
     bot.ui.inject();
-
     bot.start = (...args) => bot.rune.start(...args);
     bot.stop = (...args) => bot.rune.stop(...args);
     bot.reload = () => window.minibiaBotReload?.();
     bot.status = () => ({
       version: bot.version,
-      pz: {
-        home: bot.pz.getHomePz(),
-      },
+      pz: { home: bot.pz.getHomePz() },
       xray: bot.xray.status(),
       panic: bot.panic.status(),
       rune: bot.rune.status(),
@@ -169,6 +142,7 @@
       attack: bot.attack.status(),
       attackAoe: bot.attackAoe?.status?.() || null,
       redTextAlert: bot.redTextAlert?.status?.() || null,
+      caveSmartPath: bot.caveSmartPath?.status?.() || null,
       cave: bot.cave.status(),
       equipRing: bot.equipRing.status(),
       eat: bot.eat.status(),
@@ -178,43 +152,15 @@
 
     window.minibiaBot = bot;
     window.pzBot = bot.pz;
-
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "attackAoe", "redTextAlert", "cave", "equipRing", "eat", "fishing", "talk", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "attackAoe", "redTextAlert", "cave", "caveSmartPath", "equipRing", "eat", "fishing", "talk", "ui"],
     });
     console.log("minibiaBot.reload()");
-    console.log("minibiaBot.xray.status()");
-    console.log("minibiaBot.panic.status()");
-    console.log("minibiaBot.pz.goToNearestPz()");
-    console.log("minibiaBot.pz.setHomePzCurrentSpot()");
-    console.log("minibiaBot.pz.goToHomePz()");
-    console.log("minibiaBot.rune.start()");
-    console.log("minibiaBot.rune.stop()");
-    console.log("minibiaBot.heal.start()");
-    console.log("minibiaBot.heal.stop()");
-    console.log("minibiaBot.invisible.start()");
-    console.log("minibiaBot.invisible.stop()");
-    console.log("minibiaBot.magicShield.start()");
-    console.log("minibiaBot.magicShield.stop()");
-    console.log("minibiaBot.attack.start()");
-    console.log("minibiaBot.attack.stop()");
-    console.log("minibiaBot.attackAoe.start({ spellHotbarSlot: 5, minMonsters: 3, squareRange: 3 })");
-    console.log("minibiaBot.attackAoe.stop()");
-    console.log("minibiaBot.redTextAlert.start()");
-    console.log("minibiaBot.redTextAlert.stop()");
+    console.log("minibiaBot.caveSmartPath.status()");
     console.log("minibiaBot.cave.addWaypointCurrentSpot()");
     console.log("minibiaBot.cave.start()");
     console.log("minibiaBot.cave.stop()");
-    console.log("minibiaBot.equipRing.start()");
-    console.log("minibiaBot.equipRing.stop()");
-    console.log("minibiaBot.eat.start()");
-    console.log("minibiaBot.eat.stop()");
-    console.log("minibiaBot.fishing.start()");
-    console.log("minibiaBot.fishing.stop()");
-    console.log("minibiaBot.talk.updateConfig({ apiKey: \"...\" })");
-    console.log("minibiaBot.talk.start()");
-    console.log("minibiaBot.talk.stop()");
     return bot;
   }
 
