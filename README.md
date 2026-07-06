@@ -12,7 +12,7 @@
 6. Paste this and press `Enter`:
 
 ```js
-fetch("https://raw.githubusercontent.com/pasqualguerrero/minibia-bot/refs/heads/main/pz-bot.js")
+fetch("https://raw.githubusercontent.com/seledoz/Blue-min/main/pz-bot.js")
   .then((r) => r.text())
   .then((code) => eval(code));
 ```
@@ -21,19 +21,21 @@ If the console warns about pasting code, type `allow pasting` first and press `E
 
 ## Code
 
-This repo now has a simple source layout for browser-loaded Minibia routines, while still serving a single `pz-bot.js` bundle that you can reload from DevTools.
+This repo now has a simple source layout for browser-loaded Minibia routines, while still serving a single `pz-bot.js` loader that you can reload from DevTools.
 
 **Layout**
 
-- [pz-bot.js](/home/yuno/minibia-bot/pz-bot.js): built browser bundle you load in game
-- [src/core.js](/home/yuno/minibia-bot/src/core.js): shared runtime helpers
-- [src/modules/pz.js](/home/yuno/minibia-bot/src/modules/pz.js): PZ/home navigation module
-- [src/modules/rune.js](/home/yuno/minibia-bot/src/modules/rune.js): rune loop module
-- [src/modules/heal.js](/home/yuno/minibia-bot/src/modules/heal.js): auto heal loop for hp and mana hotkeys
-- [src/ui/panel.js](/home/yuno/minibia-bot/src/ui/panel.js): draggable in-game panel
-- [src/main.js](/home/yuno/minibia-bot/src/main.js): bundle entrypoint
-- [build.sh](/home/yuno/minibia-bot/build.sh): rebuilds `pz-bot.js` from `src/`
-- [cors_http_server.py](/home/yuno/minibia-bot/cors_http_server.py): local dev server with CORS headers for browser fetches
+- [pz-bot.js](pz-bot.js): browser loader you load in game
+- [src/core.js](src/core.js): shared runtime helpers
+- [src/modules/pz.js](src/modules/pz.js): PZ/home navigation module
+- [src/modules/rune.js](src/modules/rune.js): rune loop module
+- [src/modules/heal.js](src/modules/heal.js): auto heal loop for hp and mana hotkeys
+- [src/modules/auto-attack.js](src/modules/auto-attack.js): auto targeting and attack module
+- [src/modules/auto-attack-aoe.js](src/modules/auto-attack-aoe.js): AoE spell rule for nearby monsters
+- [src/ui/panel.js](src/ui/panel.js): draggable in-game panel
+- [src/main.js](src/main.js): bundle entrypoint
+- [build.sh](build.sh): rebuilds `pz-bot.js` from `src/`
+- [cors_http_server.py](cors_http_server.py): local dev server with CORS headers for browser fetches
 
 **Reload In Game**
 
@@ -68,6 +70,13 @@ minibiaBot.heal.start()
 minibiaBot.heal.stop()
 minibiaBot.heal.status()
 
+minibiaBot.attack.start()
+minibiaBot.attack.stop()
+minibiaBot.attack.status()
+
+minibiaBot.attackAoe.start({ spellHotbarSlot: 5, minMonsters: 3, squareRange: 3 })
+minibiaBot.attackAoe.stop()
+minibiaBot.attackAoe.status()
 ```
 
 Backward-compatible alias:
