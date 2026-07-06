@@ -19,6 +19,8 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
     lastPathLength: 0,
     lastTargetTile: null,
     lastError: null,
+    lastBlockedCavePathAt: 0,
+    blockedCavePathCount: 0,
   };
 
   const config = Object.assign(
@@ -28,6 +30,7 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
       viewportDx: 8,
       viewportDy: 6,
       useOnlyForCave: true,
+      pauseCavePathWhileTargeting: true,
     },
     bot.storage.get(configStorageKey, {}) || {}
   );
@@ -37,6 +40,7 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
   config.viewportDx = normalizePositiveInteger(config.viewportDx, 8);
   config.viewportDy = normalizePositiveInteger(config.viewportDy, 6);
   config.useOnlyForCave = config.useOnlyForCave !== false;
+  config.pauseCavePathWhileTargeting = config.pauseCavePathWhileTargeting !== false;
 
   function persistConfig() {
     bot.storage.set(configStorageKey, { ...config });
@@ -64,6 +68,12 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
       y: Math.trunc(y),
       z: Math.trunc(z),
     };
+  }
+
+  function isSamePosition(left, right) {
+    const a = normalizePosition(left);
+    const b = normalizePosition(right);
+    return !!a && !!b && a.x === b.x && a.y === b.y && a.z === b.z;
   }
 
   function getDistance(from, to) {
@@ -317,6 +327,35 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
     return { targetTile, path, targetOnScreen };
   }
 
+  function attackHasActiveTarget() {
+    const attackStatus = bot.attack?.status?.() || null;
+    return !!attackStatus?.currentTarget || !!attackStatus?.combatActive || Number(attackStatus?.targetCount || 0) > 0;
+  }
+
+  function shouldBlockCaveWaypointPath(to) {
+    if (!config.pauseCavePathWhileTargeting || !attackHasActiveTarget()) {
+      return false;
+    }
+
+    const caveStatus = bot.cave?.status?.() || null;
+    if (!caveStatus?.running || !caveStatus?.currentWaypoint) {
+      return false;
+    }
+
+    return isSamePosition(to, caveStatus.currentWaypoint);
+  }
+
+  function blockCaveWaypointPath() {
+    state.lastBlockedCavePathAt = Date.now();
+    state.blockedCavePathCount += 1;
+    if (state.blockedCavePathCount === 1 || state.blockedCavePathCount % 10 === 0) {
+      bot.log("cave waypoint movement paused while auto attack has a target", {
+        blockedCavePathCount: state.blockedCavePathCount,
+      });
+    }
+    return null;
+  }
+
   function install() {
     const pathfinder = window.gameClient?.world?.pathfinder;
     if (!pathfinder || typeof pathfinder.findPath !== "function") {
@@ -330,6 +369,10 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
     state.originalFindPath = pathfinder.findPath.bind(pathfinder);
 
     pathfinder.findPath = function smartFindPath(from, to, ...args) {
+      if (shouldBlockCaveWaypointPath(to)) {
+        return blockCaveWaypointPath();
+      }
+
       if (shouldUseSmartPath(from, to)) {
         try {
           const smart = getSmartTarget(from, to);
@@ -399,6 +442,9 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
     if (Object.prototype.hasOwnProperty.call(normalized, "useOnlyForCave")) {
       normalized.useOnlyForCave = normalized.useOnlyForCave !== false;
     }
+    if (Object.prototype.hasOwnProperty.call(normalized, "pauseCavePathWhileTargeting")) {
+      normalized.pauseCavePathWhileTargeting = normalized.pauseCavePathWhileTargeting !== false;
+    }
 
     Object.assign(config, normalized);
     persistConfig();
@@ -418,6 +464,8 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
       lastSmartPathAt: state.lastSmartPathAt,
       lastPathLength: state.lastPathLength,
       lastTargetTile: state.lastTargetTile ? { ...state.lastTargetTile } : null,
+      lastBlockedCavePathAt: state.lastBlockedCavePathAt,
+      blockedCavePathCount: state.blockedCavePathCount,
       lastError: state.lastError,
     };
   }
@@ -463,7 +511,7 @@ window.__minibiaBotBundle.installCaveSmartPathModule = function installCaveSmart
 
     if (statusLabel) {
       statusLabel.textContent = config.enabled
-        ? `Smart path: on${state.lastPathLength ? ` • last path ${state.lastPathLength} tiles` : ""}`
+        ? `Smart path: on${state.blockedCavePathCount ? ` • combat pause ${state.blockedCavePathCount}` : state.lastPathLength ? ` • last path ${state.lastPathLength} tiles` : ""}`
         : "Smart path: off";
     }
   }
