@@ -7,6 +7,7 @@
     ["minibiaBot.invisible.config", "k9x.invisible.config"],
     ["minibiaBot.magicShield.config", "k9x.magicShield.config"],
     ["minibiaBot.attack.config", "k9x.attack.config"],
+    ["minibiaBot.attackAoe.config", "k9x.attackAoe.config"],
     ["minibiaBot.cave.config", "k9x.cave.config"],
     ["minibiaBot.cave.route", "k9x.cave.route"],
     ["minibiaBot.cave.transitions", "k9x.cave.transitions"],
@@ -26,6 +27,7 @@
     ["gameHelper.invisible.config", "k9x.invisible.config"],
     ["gameHelper.magicShield.config", "k9x.magicShield.config"],
     ["gameHelper.attack.config", "k9x.attack.config"],
+    ["gameHelper.attackAoe.config", "k9x.attackAoe.config"],
     ["gameHelper.cave.config", "k9x.cave.config"],
     ["gameHelper.cave.route", "k9x.cave.route"],
     ["gameHelper.cave.transitions", "k9x.cave.transitions"],
@@ -46,6 +48,7 @@
     ["invisible", "k9x.invisible.config"],
     ["magicShield", "k9x.magicShield.config"],
     ["attack", "k9x.attack.config"],
+    ["attackAoe", "k9x.attackAoe.config"],
     ["cave", "k9x.cave.config"],
     ["equipRing", "k9x.equipRing.config"],
     ["eat", "k9x.eat.config"],
@@ -135,6 +138,7 @@
     currentBundle.installAutoInvisibleModule(bot);
     currentBundle.installAutoMagicShieldModule(bot);
     currentBundle.installAutoAttackModule(bot);
+    currentBundle.installAutoAttackAoeModule?.(bot);
     currentBundle.installCaveModule(bot);
     currentBundle.installEquipRingModule(bot);
     currentBundle.installAutoEatModule(bot);
@@ -159,6 +163,7 @@
       invisible: bot.invisible.status(),
       magicShield: bot.magicShield.status(),
       attack: bot.attack.status(),
+      attackAoe: bot.attackAoe?.status?.() || null,
       cave: bot.cave.status(),
       equipRing: bot.equipRing.status(),
       eat: bot.eat.status(),
@@ -171,7 +176,7 @@
 
     console.log("[minibia-bot] ready", {
       version: bot.version,
-      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "cave", "equipRing", "eat", "fishing", "talk", "ui"],
+      modules: ["pz", "xray", "panic", "rune", "heal", "invisible", "magicShield", "attack", "attackAoe", "cave", "equipRing", "eat", "fishing", "talk", "ui"],
     });
     console.log("minibiaBot.reload()");
     console.log("minibiaBot.xray.status()");
@@ -189,6 +194,8 @@
     console.log("minibiaBot.magicShield.stop()");
     console.log("minibiaBot.attack.start()");
     console.log("minibiaBot.attack.stop()");
+    console.log("minibiaBot.attackAoe.start({ spellHotbarSlot: 5, minMonsters: 3, squareRange: 3 })");
+    console.log("minibiaBot.attackAoe.stop()");
     console.log("minibiaBot.cave.addWaypointCurrentSpot()");
     console.log("minibiaBot.cave.start()");
     console.log("minibiaBot.cave.stop()");
